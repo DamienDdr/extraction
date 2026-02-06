@@ -1,27 +1,20 @@
 from playwright.sync_api import sync_playwright
 import pandas as pd
-import time
 from datetime import datetime, timedelta
+import calendar
+import time
 
 SESSION_FILE = "bnpparibas_session.json"
-OUTPUT_FILE = "leave_planning.csv"
+OUTPUT_FILE = "leave_planning_final.csv"
 
-START_DATE = datetime(2026, 2, 1)
+YEAR = 2026
+MONTH = 2
 
-def col_to_date(col_idx):
-    return (START_DATE + timedelta(days=col_idx)).strftime("%Y/%m/%d")
+START_DATE = datetime(YEAR, MONTH, 1)
+DAYS_IN_MONTH = calendar.monthrange(YEAR, MONTH)[1]
 
-def classify(classes, title):
-    c = (classes or "").lower()
-    t = (title or "").lower()
-
-    if "weekend" in c:
-        return "WEEKEND"
-    if "telework" in c or "teletravail" in t:
-        return "TELETRAVAIL"
-    if "cong" in t:
-        return "CONGES"
-    return "AUTRE"
+def date_str(d):
+    return d.strftime("%Y/%m/%d")
 
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=False)
@@ -34,61 +27,70 @@ with sync_playwright() as p:
 
     print("✅ Page chargée")
 
-    # =====================================================
-    # 1️⃣ NOMS – colonne gauche FIXE
-    # =====================================================
-    name_cells = page.locator("td.dhx_matrix_scell, div.dhx_scell")
-    names = []
+    # ===== NOMS COLLABORATEURS (colonne gauche)
+    name_cells = page.locator("td.dhx_matrix_scell")
+    collaborators = [
+        name_cells.nth(i).inner_text().strip()
+        for i in range(name_cells.count())
+        if name_cells.nth(i).inner_text().strip()
+    ]
 
-    for i in range(name_cells.count()):
-        txt = (name_cells.nth(i).inner_text() or "").strip()
-        if txt:
-            names.append(txt)
-
-    print(f"👤 {len(names)} noms détectés")
-
-    # =====================================================
-    # 2️⃣ PLANNING – lignes principales
-    # =====================================================
     rows = page.locator("tr.dhx_row_item")
-    row_count = rows.count()
 
-    print(f"👥 {row_count} collaborateurs détectés")
+    print(f"👥 {len(collaborators)} collaborateurs détectés")
 
     data = []
 
-    for r in range(row_count):
-        row = rows.nth(r)
-        collaborateur = names[r] if r < len(names) else f"COLLAB_{r+1}"
+    for r in range(rows.count()):
+        collab = collaborators[r]
+        tr = rows.nth(r)
+        cells = tr.locator("td")
 
-        cells = row.locator("td")
+        for day_idx in range(DAYS_IN_MONTH):
+            day = START_DATE + timedelta(days=day_idx)
 
-        for day_idx in range(cells.count()):
-            cell = cells.nth(day_idx)
-            events = cell.locator(".dhx_matrix_line > div")
-            cell_class = (cell.get_attribute("class") or "").lower()
-
-            # WEEKEND sans événement
-            if "weekend" in cell_class and events.count() == 0:
+            # 🔹 WEEKEND (calcul calendaire)
+            if day.weekday() >= 5:
                 data.append({
-                    "collaborateur": collaborateur,
-                    "date": col_to_date(day_idx),
+                    "collaborateur": collab,
+                    "date": date_str(day),
                     "type": "WEEKEND",
                     "title": ""
                 })
+                continue
 
-            for e in range(events.count()):
-                ev = events.nth(e)
+            cell = cells.nth(day_idx)
 
-                classes = ev.get_attribute("class")
-                title = ev.get_attribute("title") or ev.text_content()
-
+            # 🔹 CONGÉS = bandeau vert
+            leave_events = cell.locator(".dhx_matrix_line > div")
+            if leave_events.count() > 0:
+                title = (leave_events.first.get_attribute("title") or "").strip()
                 data.append({
-                    "collaborateur": collaborateur,
-                    "date": "" if "telework" in (classes or "").lower() else col_to_date(day_idx),
-                    "type": classify(classes, title),
-                    "title": (title or "").strip()
+                    "collaborateur": collab,
+                    "date": date_str(day),
+                    "type": "CONGES",
+                    "title": title
                 })
+                continue
+
+            # 🔹 TÉLÉTRAVAIL = icône maison
+            home_icon = cell.locator("i[class*='home'], span[class*='home'], div[class*='home']")
+            if home_icon.count() > 0:
+                data.append({
+                    "collaborateur": collab,
+                    "date": date_str(day),
+                    "type": "TELETRAVAIL",
+                    "title": ""
+                })
+                continue
+
+            # 🔹 PRÉSENT SUR SITE
+            data.append({
+                "collaborateur": collab,
+                "date": date_str(day),
+                "type": "PRESENT",
+                "title": ""
+            })
 
     df = pd.DataFrame(data)
     df.to_csv(OUTPUT_FILE, index=False, encoding="utf-8")
