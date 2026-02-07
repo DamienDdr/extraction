@@ -14,7 +14,7 @@ NB_DAYS = (MONTH_END - MONTH_START).days + 1
 
 
 def is_weekend(d):
-    return d.weekday() >= 5  # Samedi (5) et Dimanche (6)
+    return d.weekday() >= 5
 
 
 def date_str(d):
@@ -23,13 +23,12 @@ def date_str(d):
 
 def determine_event_type(cls):
     """Détermine le type d'événement selon les classes CSS"""
-    # ⚠️ IGNORER les barres de week-end (déjà gérées par is_weekend())
     if "grey_cell_weekend" in cls:
         return None
 
     if "telework" in cls and "validated_vcell" in cls:
         return "TELETRAVAIL"
-    elif "validated_vcell" in cls:  # Congés (sans telework)
+    elif "validated_vcell" in cls:
         return "CONGES"
 
     return None
@@ -40,11 +39,9 @@ def pixels_to_days(left_px, width_px, col_width, nb_days):
     center_px = left_px + width_px / 2
     center_day = round(center_px / col_width)
 
-    # Pour les petits événements (icônes < 1 jour)
     if width_px < col_width * 0.8:
         return max(0, min(nb_days - 1, center_day)), max(0, min(nb_days - 1, center_day))
 
-    # Pour les événements longs (barres)
     start_idx = max(0, int(math.floor(left_px / col_width)))
     end_idx = min(nb_days - 1, int(math.ceil((left_px + width_px) / col_width)) - 1)
 
@@ -62,13 +59,6 @@ with sync_playwright() as p:
 
     print("✅ Page chargée")
 
-    name_cells = page.locator("td.dhx_matrix_scell")
-    collaborators = [
-        name_cells.nth(i).inner_text().strip()
-        for i in range(name_cells.count())
-        if name_cells.nth(i).inner_text().strip()
-    ]
-
     rows = page.locator("tr.dhx_row_item")
     row_count = rows.count()
     if row_count == 0:
@@ -80,16 +70,17 @@ with sync_playwright() as p:
 
     for r in range(row_count):
         row = rows.nth(r)
-        name = collaborators[r] if r < len(collaborators) else "INCONNU"
 
-        # Ignorer la ligne "Mes Collègues"
-        if name == "Mes Collègues":
-            print(f"⏭️  Ligne {r} → {name} (ignorée)\n")
+        name_cell = row.locator("td.dhx_matrix_scell").first
+        name = name_cell.inner_text().strip() if name_cell.count() > 0 else "INCONNU"
+
+        if name == "Mes Collègues" or not name:
+            print(f"⏭️  Ligne {r} → '{name}' (ignorée)\n")
             continue
 
         print(f"🧩 Ligne {r} → {name}")
 
-        # INIT : week-ends calculés automatiquement
+        # INIT
         planning = {}
         for i in range(NB_DAYS):
             d = MONTH_START + timedelta(days=i)
@@ -126,7 +117,7 @@ with sync_playwright() as p:
 
             event_type = determine_event_type(cls)
             if not event_type:
-                continue  # Ignore week-ends et événements non reconnus
+                continue
 
             start_idx, end_idx = pixels_to_days(left_px, width_px, col_width, NB_DAYS)
 
@@ -136,14 +127,17 @@ with sync_playwright() as p:
                 count_conges += 1
 
             for day_idx in range(start_idx, end_idx + 1):
-                # Les congés ont priorité sur le télétravail
-                if event_type == "CONGES" or planning[day_idx]["type"] not in ["CONGES", "WEEKEND"]:
+                # ✅ NE JAMAIS ÉCRASER UN WEEKEND !
+                if planning[day_idx]["type"] == "WEEKEND":
+                    continue
+
+                # Les congés ont priorité sur le télétravail et présent
+                if event_type == "CONGES" or planning[day_idx]["type"] == "PRESENT":
                     planning[day_idx]["type"] = event_type
                     planning[day_idx]["title"] = title
 
         print(f"   ✅ 🏠 TT: {count_teletravail} | 🏖️ CP: {count_conges}")
 
-        # Export
         for i in range(NB_DAYS):
             info = planning[i]
             records.append({
