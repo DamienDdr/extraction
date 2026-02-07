@@ -1,7 +1,7 @@
 # save_session.py
 from playwright.sync_api import sync_playwright
 
-SESSION_FILE = "bnpparibas_session.json"
+SESSION_FILE = "../bnpparibas_session.json"
 
 with sync_playwright() as p:
     browser = p.chromium.launch(

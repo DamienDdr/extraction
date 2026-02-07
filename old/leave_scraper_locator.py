@@ -1,15 +1,15 @@
-# leave_scraper_complete.py
+# leave_scraper_locator.py
 from playwright.sync_api import sync_playwright, TimeoutError
 import pandas as pd
-import time
 from datetime import datetime
+import time
 
-SESSION_FILE = "bnpparibas_session.json"
+SESSION_FILE = "../bnpparibas_session.json"
 OUTPUT_FILE = "leave_data.csv"
 
 def parse_dates(date_text):
     """
-    Convertit une chaîne de dates au format standard ISO (YYYY-MM-DD).
+    Convertit une chaîne de dates au format ISO.
     Exemple : "12/02/2026 - 14/02/2026" -> "2026-02-12", "2026-02-14"
     """
     try:
@@ -28,33 +28,30 @@ with sync_playwright() as p:
     context = browser.new_context(storage_state=SESSION_FILE)
     page = context.new_page()
 
-    # Aller sur la page Leave Planning
     page.goto("https://dailyrh.hr.bnpparibas/app/foryou/#/demarches/leaveplanning")
     page.wait_for_load_state("networkidle")
-    time.sleep(3)  # attendre le rendu complet
+    time.sleep(3)  # attendre rendu complet SPA
 
     print("✅ Page chargée, récupération des données...")
 
-    # Récupérer toutes les cartes et lignes de congés
-    cards = page.query_selector_all("div.leave-item")
-    rows = page.query_selector_all("[role='row']")
-    elements = cards + rows
+    # Récupérer toutes les cartes de congés via locator
+    leave_cards = page.locator("div[class*='leave-card']")  # à adapter selon ton DOM
+    count = leave_cards.count()
+    print(f"🔹 {count} éléments trouvés.")
 
-    if not elements:
-        print("⚠️ Aucun élément trouvé. Vérifie que la page est bien chargée et que ta session est valide.")
+    if count == 0:
+        print("⚠️ Aucun élément trouvé. Vérifie le DOM ou adapte le locator.")
         browser.close()
         exit()
 
     data = []
-    for el in elements:
-        # Extraction des informations, avec fallback si l'élément n'existe pas
-        type_el = el.query_selector(".leave-type")
-        date_el = el.query_selector(".leave-dates")
-        statut_el = el.query_selector(".leave-status")
+    for i in range(count):
+        el = leave_cards.nth(i)
 
-        type_conge = type_el.inner_text().strip() if type_el else ""
-        dates = date_el.inner_text().strip() if date_el else ""
-        statut = statut_el.inner_text().strip() if statut_el else ""
+        # Extraction avec fallback
+        type_conge = el.locator("span[class*='type']").inner_text() if el.locator("span[class*='type']").count() > 0 else ""
+        dates = el.locator("span[class*='dates']").inner_text() if el.locator("span[class*='dates']").count() > 0 else ""
+        statut = el.locator("span[class*='status']").inner_text() if el.locator("span[class*='status']").count() > 0 else ""
 
         start_date, end_date = parse_dates(dates)
 

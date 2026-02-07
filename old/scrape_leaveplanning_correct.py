@@ -3,8 +3,8 @@ import pandas as pd
 import re
 import time
 
-SESSION_FILE = "bnpparibas_session.json"
-OUTPUT_FILE = "leave_planning.csv"
+SESSION_FILE = "../bnpparibas_session.json"
+OUTPUT_FILE = "../leave_planning.csv"
 
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=False)
