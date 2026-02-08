@@ -10,35 +10,63 @@ SESSION_FILE = "bnpparibas_session.json"
 OUTPUT_FILE = "leave_planning_2026_complete.csv"
 
 
-def is_weekend(d):
-    return d.weekday() >= 5
-
-
 def date_str(d):
     return d.strftime("%Y/%m/%d")
 
 
-def determine_event_type(cls):
+def determine_event_type_and_status(cls):
+    """Détermine le type d'événement ET le statut de validation selon les classes CSS"""
+    event_type = None
+    status = None
+
     if "grey_cell_weekend" in cls:
-        return None
-    if "telework" in cls and "validated_vcell" in cls:
-        return "TELETRAVAIL"
-    elif "validated_vcell" in cls:
-        return "CONGES"
-    return None
+        event_type = "JOUR_NON_OUVRE"
+        status = None  # Pas de statut pour les jours non ouvrés
+    elif "telework" in cls:
+        event_type = "TELETRAVAIL"
+        if "to_validate_vcell" in cls:
+            status = "À valider"
+        elif "validated_vcell" in cls:
+            status = "Validé"
+    elif "validated_vcell" in cls or "to_validate_vcell" in cls:
+        event_type = "CONGES"
+        if "to_validate_vcell" in cls:
+            status = "À valider"
+        elif "validated_vcell" in cls:
+            status = "Validé"
+
+    return event_type, status
 
 
-def pixels_to_days(left_px, width_px, col_width, nb_days):
+def is_half_day(width_px):
+    """Détecte si c'est une demi-journée (width très petite)"""
+    return width_px <= 1
+
+
+def pixels_to_days(left_px, width_px, col_width, nb_days, event_type=None):
+    """Convertit position/largeur en pixels vers indices de jours"""
     center_px = left_px + width_px / 2
     center_day = round(center_px / col_width)
 
-    if width_px < col_width * 0.8:
+    if width_px < col_width * 0.8 or event_type == "JOUR_NON_OUVRE":
         return max(0, min(nb_days - 1, center_day)), max(0, min(nb_days - 1, center_day))
 
     start_idx = max(0, int(math.floor(left_px / col_width)))
     end_idx = min(nb_days - 1, int(math.ceil((left_px + width_px) / col_width)) - 1)
 
     return start_idx, end_idx
+
+
+def build_detail(title, status):
+    """Construit le texte du detail en combinant title et status"""
+    if title and status:
+        return f"{title} ({status})"
+    elif title:
+        return title
+    elif status:
+        return status
+    else:
+        return ""
 
 
 def scrape_month(page, year, month):
@@ -50,7 +78,6 @@ def scrape_month(page, year, month):
 
     print(f"\n📆 Traitement : {month_start.strftime('%B %Y').upper()}")
 
-    # Attendre que le calendrier soit chargé
     time.sleep(2)
 
     rows = page.locator("tr.dhx_row_item")
@@ -73,14 +100,15 @@ def scrape_month(page, year, month):
         if name == "Mes Collègues" or not name:
             continue
 
-        # INIT planning du mois
         planning = {}
         for i in range(nb_days):
             d = month_start + timedelta(days=i)
             planning[i] = {
                 "date": date_str(d),
-                "type": "WEEKEND" if is_weekend(d) else "PRESENT",
-                "title": ""
+                "type_am": "PRESENT",
+                "type_pm": "PRESENT",
+                "detail_am": "",
+                "detail_pm": ""
             }
 
         matrix_div = row.locator(".dhx_matrix_line").first
@@ -88,6 +116,9 @@ def scrape_month(page, year, month):
         col_width = matrix_width / nb_days
 
         events = matrix_div.locator("div[class*='cell'], div[class*='event']")
+
+        # Collecter tous les événements
+        all_events = []
 
         for e in range(events.count()):
             ev = events.nth(e)
@@ -103,28 +134,117 @@ def scrape_month(page, year, month):
             left_px = float(left_match.group(1))
             width_px = float(width_match.group(1))
 
-            event_type = determine_event_type(cls)
+            # ✅ Détecter type ET statut
+            event_type, status = determine_event_type_and_status(cls)
             if not event_type:
                 continue
 
-            start_idx, end_idx = pixels_to_days(left_px, width_px, col_width, nb_days)
+            # ✅ Construire le detail (title + status)
+            detail = build_detail(title, status)
 
-            for day_idx in range(start_idx, end_idx + 1):
-                if planning[day_idx]["type"] == "WEEKEND":
-                    continue
+            start_idx, end_idx = pixels_to_days(left_px, width_px, col_width, nb_days, event_type)
+            half_day = is_half_day(width_px)
 
-                if event_type == "CONGES" or planning[day_idx]["type"] == "PRESENT":
-                    planning[day_idx]["type"] = event_type
-                    planning[day_idx]["title"] = title
+            all_events.append({
+                'type': event_type,
+                'detail': detail,  # ✅ Detail complet (title + status)
+                'start_idx': start_idx,
+                'end_idx': end_idx,
+                'half_day': half_day,
+                'order': e
+            })
 
-        # Ajouter aux records
+        # Regrouper les demi-journées par jour
+        half_days_by_day = {}
+        for evt in all_events:
+            if evt['half_day']:
+                for day_idx in range(evt['start_idx'], evt['end_idx'] + 1):
+                    if day_idx not in half_days_by_day:
+                        half_days_by_day[day_idx] = []
+                    half_days_by_day[day_idx].append(evt)
+
+        count_jno = 0
+        count_teletravail = 0
+        count_conges = 0
+        count_demi = 0
+
+        # ÉTAPE 1 : Traiter les DEMI-JOURNÉES EN PREMIER
+        for day_idx, day_events in half_days_by_day.items():
+            day_events.sort(key=lambda x: x['order'])
+
+            for idx, evt in enumerate(day_events[:2]):
+                period = "am" if idx == 0 else "pm"
+                event_type = evt['type']
+                detail = evt['detail']
+
+                count_demi += 1
+
+                if period == "am":
+                    current = planning[day_idx]["type_am"]
+                    if event_type == "JOUR_NON_OUVRE" or (event_type == "CONGES" and current != "JOUR_NON_OUVRE") or (
+                            event_type == "TELETRAVAIL" and current == "PRESENT"):
+                        planning[day_idx]["type_am"] = event_type
+                        planning[day_idx]["detail_am"] = detail
+                else:
+                    current = planning[day_idx]["type_pm"]
+                    if event_type == "JOUR_NON_OUVRE" or (event_type == "CONGES" and current != "JOUR_NON_OUVRE") or (
+                            event_type == "TELETRAVAIL" and current == "PRESENT"):
+                        planning[day_idx]["type_pm"] = event_type
+                        planning[day_idx]["detail_pm"] = detail
+
+        # ÉTAPE 2 : Traiter les JOURNÉES ENTIÈRES
+        for evt in all_events:
+            event_type = evt['type']
+            detail = evt['detail']
+
+            if event_type == "JOUR_NON_OUVRE":
+                count_jno += 1
+            elif event_type == "TELETRAVAIL":
+                count_teletravail += 1
+            elif event_type == "CONGES":
+                count_conges += 1
+
+            if evt['half_day']:
+                continue
+
+            for day_idx in range(evt['start_idx'], evt['end_idx'] + 1):
+                current_am = planning[day_idx]["type_am"]
+                current_pm = planning[day_idx]["type_pm"]
+
+                if event_type == "JOUR_NON_OUVRE":
+                    planning[day_idx]["type_am"] = "JOUR_NON_OUVRE"
+                    planning[day_idx]["type_pm"] = "JOUR_NON_OUVRE"
+                    planning[day_idx]["detail_am"] = detail
+                    planning[day_idx]["detail_pm"] = detail
+
+                elif event_type == "CONGES":
+                    if current_am == "PRESENT":
+                        planning[day_idx]["type_am"] = "CONGES"
+                        planning[day_idx]["detail_am"] = detail
+                    if current_pm == "PRESENT":
+                        planning[day_idx]["type_pm"] = "CONGES"
+                        planning[day_idx]["detail_pm"] = detail
+
+                elif event_type == "TELETRAVAIL":
+                    if current_am == "PRESENT":
+                        planning[day_idx]["type_am"] = "TELETRAVAIL"
+                        planning[day_idx]["detail_am"] = detail
+                    if current_pm == "PRESENT":
+                        planning[day_idx]["type_pm"] = "TELETRAVAIL"
+                        planning[day_idx]["detail_pm"] = detail
+
+        print(f"   ✅ JNO: {count_jno} | 🏠 TT: {count_teletravail} | 🏖️ CP: {count_conges} | ⏰ Demi: {count_demi}")
+
+        # Export
         for i in range(nb_days):
             info = planning[i]
             records.append({
                 "collaborateur": name,
                 "date": info["date"],
-                "type": info["type"],
-                "title": info["title"]
+                "type_am": info["type_am"],
+                "detail_am": info["detail_am"],
+                "type_pm": info["type_pm"],
+                "detail_pm": info["detail_pm"]
             })
 
     print(f"   ✅ {len(records)} lignes extraites")
@@ -135,11 +255,7 @@ def get_current_month_text(page):
     """Récupère le texte du mois affiché - ex: 'février 2026'"""
     try:
         date_elem = page.locator("#date_now")
-
-        # ✅ Attendre que l'élément soit ATTACHÉ au DOM (pas forcément visible)
         date_elem.wait_for(state="attached", timeout=15000)
-
-        # text_content() fonctionne même sur les éléments cachés
         text = date_elem.text_content(timeout=5000)
 
         if text and text.strip():
@@ -161,7 +277,6 @@ def parse_month_year(text):
 
     text_lower = text.lower()
 
-    # Extraire mois et année
     for month_name, month_num in french_months.items():
         if month_name in text_lower:
             year_match = re.search(r'(\d{4})', text)
@@ -174,7 +289,7 @@ def parse_month_year(text):
 
 def navigate_to_january(page, year):
     """Revient à janvier de l'année donnée avec détection intelligente"""
-    target_month = 1  # Janvier
+    target_month = 1
     target_year = year
 
     current_text = get_current_month_text(page)
@@ -191,14 +306,11 @@ def navigate_to_january(page, year):
 
     while (current_month != target_month or current_year != target_year) and clicks < max_clicks:
 
-        # Décider d'aller en arrière ou en avant
         if current_year > target_year or (current_year == target_year and current_month > target_month):
-            # Aller en arrière ◀️
             print(f"   ◀️  Clic {clicks + 1} : {current_text} → précédent")
             prev_button = page.locator("div.dhx_cal_prev_button.prev-month").first
             prev_button.click()
         elif current_year < target_year or (current_year == target_year and current_month < target_month):
-            # Aller en avant ▶️
             print(f"   ▶️  Clic {clicks + 1} : {current_text} → suivant")
             next_button = page.locator("div.dhx_cal_next_button.next-month").first
             next_button.click()
@@ -235,7 +347,6 @@ with sync_playwright() as p:
     print("✅ Page chargée, attente du chargement complet...")
     time.sleep(6)
 
-    # 🔍 DEBUG : Afficher le texte du mois détecté
     print("\n🔍 DEBUG : Test de détection du mois...")
     try:
         detected_month = get_current_month_text(page)
@@ -245,7 +356,6 @@ with sync_playwright() as p:
         browser.close()
         exit(1)
 
-    # ⏪ ÉTAPE 1 : Aller à janvier 2026
     try:
         navigate_to_january(page, 2026)
     except Exception as e:
@@ -258,14 +368,11 @@ with sync_playwright() as p:
 
     all_records = []
 
-    # ▶️ ÉTAPE 2 : Boucle sur les 12 mois de 2026
     for month in range(1, 13):
         try:
-            # Scraper le mois actuel
             month_records = scrape_month(page, 2026, month)
             all_records.extend(month_records)
 
-            # Aller au mois suivant (sauf pour décembre)
             if month < 12:
                 go_to_next_month(page)
 
@@ -275,7 +382,6 @@ with sync_playwright() as p:
 
             traceback.print_exc()
 
-            # Essayer de continuer quand même
             if month < 12:
                 try:
                     go_to_next_month(page)
@@ -284,14 +390,12 @@ with sync_playwright() as p:
                     break
             continue
 
-    # Export final
     if all_records:
         df = pd.DataFrame(all_records)
         df.to_csv(OUTPUT_FILE, index=False, encoding="utf-8")
         print(f"\n🎉 Export terminé → {OUTPUT_FILE}")
         print(f"📊 Total : {len(all_records)} lignes")
 
-        # Statistiques par mois
         months_scraped = sorted(set(r['date'][:7] for r in all_records))
         print(f"📅 Mois collectés : {len(months_scraped)}/12")
         for month_str in months_scraped:
