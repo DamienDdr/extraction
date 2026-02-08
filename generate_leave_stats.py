@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Script pour générer des statistiques de congés par personne à partir du CSV de planning
-Avec planning annuel en format matriciel (mois x jours)
+Avec planning annuel dynamique (liste déroulante + formules Excel)
 """
 
 import pandas as pd
@@ -11,6 +11,7 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.formatting.rule import FormulaRule
 
 
 def is_validated(detail):
@@ -30,66 +31,6 @@ def is_rtt(detail):
     if pd.isna(detail) or detail == '':
         return False
     return 'rtt' in str(detail).lower()
-
-
-def get_day_type(type_am, type_pm, detail_am, detail_pm):
-    """
-    Détermine le type de journée en fonction de AM et PM
-    Retourne: (type, validated, text_display)
-    """
-    # Si jour non ouvré
-    if type_am == 'JOUR_NON_OUVRE' and type_pm == 'JOUR_NON_OUVRE':
-        return ('JOUR_NON_OUVRE', None, '')
-
-    # Si présent toute la journée
-    if type_am == 'PRESENT' and type_pm == 'PRESENT':
-        return ('PRESENT', None, '')
-
-    # Journée complète identique
-    if type_am == type_pm and type_am in ['TELETRAVAIL', 'CONGES']:
-        if type_am == 'TELETRAVAIL':
-            validated = is_validated(detail_am)
-            return ('TELETRAVAIL', validated, '')
-        elif type_am == 'CONGES':
-            if is_rtt(detail_am):
-                validated = is_validated(detail_am)
-                return ('RTT', validated, '')
-            else:
-                validated = is_validated(detail_am)
-                return ('CONGES', validated, '')
-
-    # Demi-journées différentes - on priorise dans l'ordre: CONGES > RTT > TELETRAVAIL > PRESENT
-    types_priority = []
-
-    # Analyser AM
-    if type_am == 'CONGES':
-        if is_rtt(detail_am):
-            types_priority.append(('RTT', is_validated(detail_am), 'AM'))
-        else:
-            types_priority.append(('CONGES', is_validated(detail_am), 'AM'))
-    elif type_am == 'TELETRAVAIL':
-        types_priority.append(('TELETRAVAIL', is_validated(detail_am), 'AM'))
-
-    # Analyser PM
-    if type_pm == 'CONGES':
-        if is_rtt(detail_pm):
-            types_priority.append(('RTT', is_validated(detail_pm), 'PM'))
-        else:
-            types_priority.append(('CONGES', is_validated(detail_pm), 'PM'))
-    elif type_pm == 'TELETRAVAIL':
-        types_priority.append(('TELETRAVAIL', is_validated(detail_pm), 'PM'))
-
-    # Si on a des types différents, on prend le plus prioritaire
-    if types_priority:
-        # Prioriser CONGES > RTT > TELETRAVAIL
-        for ptype in ['CONGES', 'RTT', 'TELETRAVAIL']:
-            for t, v, period in types_priority:
-                if t == ptype:
-                    # Si demi-journée, afficher AM ou PM
-                    text = period if len(types_priority) > 1 or (type_am == 'PRESENT' or type_pm == 'PRESENT') else ''
-                    return (t, v, text)
-
-    return ('PRESENT', None, '')
 
 
 def analyze_leave_data(csv_file):
@@ -261,27 +202,29 @@ def create_summary_sheet(wb, stats):
     ws.freeze_panes = 'A2'
 
 
-def create_calendar_planning_sheet_for_collaborator(wb, df, collaborateur, collab_num, total_collabs):
-    """Crée une feuille de planning calendrier pour un collaborateur spécifique"""
+def create_dynamic_calendar_sheet(wb, csv_file):
+    """Crée la feuille de planning dynamique avec formules Excel"""
 
-    # Créer un nom de feuille court (limite de 31 caractères)
-    sheet_name = collaborateur[:28] if len(collaborateur) > 28 else collaborateur
-    ws = wb.create_sheet(sheet_name)
+    df = pd.read_csv(csv_file)
+    collaborateurs = sorted(df['collaborateur'].unique())
+
+    ws = wb.create_sheet("Planning Calendrier")
 
     # Styles
     header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
     header_font = Font(bold=True, color="FFFFFF", size=11)
     month_fill = PatternFill(start_color="B4C7E7", end_color="B4C7E7", fill_type="solid")
     month_font = Font(bold=True, size=10)
+    dropdown_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
 
-    # Couleurs pour les types
-    teletravail_fill = PatternFill(start_color="9BC2E6", end_color="9BC2E6", fill_type="solid")  # Bleu
-    teletravail_pending_fill = PatternFill(start_color="DDEBF7", end_color="DDEBF7", fill_type="solid")  # Bleu clair
-    conges_fill = PatternFill(start_color="A9D08E", end_color="A9D08E", fill_type="solid")  # Vert
-    conges_pending_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")  # Vert clair
-    rtt_fill = PatternFill(start_color="F4B084", end_color="F4B084", fill_type="solid")  # Orange
-    rtt_pending_fill = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")  # Orange clair
-    weekend_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")  # Gris
+    # Couleurs pour formatage conditionnel
+    teletravail_fill = PatternFill(start_color="9BC2E6", end_color="9BC2E6", fill_type="solid")
+    teletravail_pending_fill = PatternFill(start_color="DDEBF7", end_color="DDEBF7", fill_type="solid")
+    conges_fill = PatternFill(start_color="A9D08E", end_color="A9D08E", fill_type="solid")
+    conges_pending_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
+    rtt_fill = PatternFill(start_color="F4B084", end_color="F4B084", fill_type="solid")
+    rtt_pending_fill = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")
+    weekend_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
 
     border = Border(
         left=Side(style='thin'),
@@ -293,32 +236,48 @@ def create_calendar_planning_sheet_for_collaborator(wb, df, collaborateur, colla
     # Titre
     ws.merge_cells('A1:AF1')
     title_cell = ws['A1']
-    title_cell.value = f"PLANNING ANNUEL 2026 - {collaborateur}"
+    title_cell.value = "PLANNING ANNUEL 2026 - DYNAMIQUE"
     title_cell.font = Font(bold=True, size=14, color="FFFFFF")
     title_cell.fill = header_fill
     title_cell.alignment = Alignment(horizontal='center', vertical='center')
     ws.row_dimensions[1].height = 25
 
+    # Sélecteur de collaborateur
+    ws['A3'] = "Collaborateur :"
+    ws['A3'].font = Font(bold=True, size=11)
+    ws['A3'].alignment = Alignment(horizontal='right', vertical='center')
+
+    ws.merge_cells('B3:D3')
+    dropdown_cell = ws['B3']
+    dropdown_cell.fill = dropdown_fill
+    dropdown_cell.alignment = Alignment(horizontal='left', vertical='center')
+    dropdown_cell.value = collaborateurs[0]
+
+    # Créer la validation de données
+    dv = DataValidation(type="list", formula1=f'"{",".join(collaborateurs)}"', allow_blank=False)
+    dv.error = 'Veuillez sélectionner un collaborateur dans la liste'
+    dv.errorTitle = 'Entrée invalide'
+    ws.add_data_validation(dv)
+    dv.add(dropdown_cell)
+
     # Légende
-    ws['A3'] = "Légende :"
-    ws['A3'].font = Font(bold=True)
+    ws['F3'] = "Légende :"
+    ws['F3'].font = Font(bold=True)
 
     legend_items = [
-        ("B3", "Télétravail ✓", teletravail_fill),
-        ("D3", "Télétravail (à valider)", teletravail_pending_fill),
-        ("G3", "Congés ✓", conges_fill),
-        ("I3", "Congés (à valider)", conges_pending_fill),
-        ("L3", "RTT ✓", rtt_fill),
-        ("N3", "RTT (à valider)", rtt_pending_fill),
-        ("Q3", "Week-end/Férié", weekend_fill),
-        ("S3", "Présent = blanc", None),
+        ("G3", "Télétravail ✓", teletravail_fill),
+        ("I3", "Télétravail à val.", teletravail_pending_fill),
+        ("L3", "Congés ✓", conges_fill),
+        ("N3", "Congés à val.", conges_pending_fill),
+        ("Q3", "RTT ✓", rtt_fill),
+        ("S3", "RTT à val.", rtt_pending_fill),
+        ("V3", "Week-end/Férié", weekend_fill),
     ]
 
     for cell_ref, text, fill in legend_items:
         cell = ws[cell_ref]
         cell.value = text
-        if fill:
-            cell.fill = fill
+        cell.fill = fill
         cell.font = Font(size=9)
         cell.alignment = Alignment(horizontal='center', vertical='center')
         cell.border = border
@@ -331,7 +290,7 @@ def create_calendar_planning_sheet_for_collaborator(wb, df, collaborateur, colla
     ws['A5'].border = border
 
     for day in range(1, 32):
-        col = day + 1  # Colonne B = jour 1
+        col = day + 1
         cell = ws.cell(row=5, column=col, value=day)
         cell.fill = header_fill
         cell.font = header_font
@@ -345,32 +304,32 @@ def create_calendar_planning_sheet_for_collaborator(wb, df, collaborateur, colla
     for col in range(2, 33):
         ws.column_dimensions[get_column_letter(col)].width = 4
 
+    # Créer une feuille cachée avec toutes les données
+    data_ws = wb.create_sheet("_Données")
+    data_ws.sheet_state = 'hidden'
+
+    # Copier les données dans la feuille cachée
+    for r_idx, (idx, row) in enumerate(df.iterrows(), 2):
+        data_ws.cell(row=r_idx, column=1, value=row['collaborateur'])
+        data_ws.cell(row=r_idx, column=2, value=row['date'])
+        data_ws.cell(row=r_idx, column=3, value=row['type_am'])
+        data_ws.cell(row=r_idx, column=4, value=row['detail_am'])
+        data_ws.cell(row=r_idx, column=5, value=row['type_pm'])
+        data_ws.cell(row=r_idx, column=6, value=row['detail_pm'])
+
+    # En-têtes de la feuille de données
+    headers_data = ['collaborateur', 'date', 'type_am', 'detail_am', 'type_pm', 'detail_pm']
+    for c_idx, header in enumerate(headers_data, 1):
+        data_ws.cell(row=1, column=c_idx, value=header)
+        data_ws.cell(row=1, column=c_idx).font = Font(bold=True)
+
     # Mois de l'année
     mois_noms = [
         "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
         "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"
     ]
 
-    # Récupérer les données du collaborateur
-    collab_df = df[df['collaborateur'] == collaborateur].copy()
-    collab_data = {}
-
-    for _, row in collab_df.iterrows():
-        date_obj = row['date_obj']
-        month = date_obj.month
-        day = date_obj.day
-
-        if month not in collab_data:
-            collab_data[month] = {}
-
-        day_type, validated, text = get_day_type(
-            row['type_am'], row['type_pm'],
-            row['detail_am'], row['detail_pm']
-        )
-
-        collab_data[month][day] = (day_type, validated, text)
-
-    # Remplir le planning
+    # Créer les lignes pour chaque mois
     for month_num, month_name in enumerate(mois_noms, 1):
         row_num = 6 + month_num - 1
 
@@ -381,55 +340,116 @@ def create_calendar_planning_sheet_for_collaborator(wb, df, collaborateur, colla
         cell.alignment = Alignment(horizontal='center', vertical='center')
         cell.border = border
 
-        # Jours du mois
+        # Formules pour chaque jour du mois
         for day in range(1, 32):
             col_num = day + 1
             cell = ws.cell(row=row_num, column=col_num)
             cell.border = border
             cell.alignment = Alignment(horizontal='center', vertical='center')
+            cell.font = Font(size=8)
 
-            # Vérifier si ce jour existe pour ce mois
-            if month_num in collab_data and day in collab_data[month_num]:
-                day_type, validated, text = collab_data[month_num][day]
+            # Formule complexe pour récupérer le statut du jour
+            # Format de date : 2026/MM/DD
+            date_str = f"2026/{month_num:02d}/{day:02d}"
 
-                # Appliquer la couleur
-                if day_type == 'JOUR_NON_OUVRE':
-                    cell.fill = weekend_fill
-                elif day_type == 'TELETRAVAIL':
-                    cell.fill = teletravail_fill if validated else teletravail_pending_fill
-                    cell.value = text if text else ''
-                    cell.font = Font(size=8)
-                elif day_type == 'CONGES':
-                    cell.fill = conges_fill if validated else conges_pending_fill
-                    cell.value = text if text else ''
-                    cell.font = Font(size=8)
-                elif day_type == 'RTT':
-                    cell.fill = rtt_fill if validated else rtt_pending_fill
-                    cell.value = text if text else ''
-                    cell.font = Font(size=8)
-                # PRESENT reste blanc (pas de fill)
-            else:
-                # Jour n'existe pas pour ce mois (ex: 31 février)
-                cell.fill = PatternFill(start_color="000000", end_color="000000", fill_type="solid")
+            # Formule SUMPRODUCT pour trouver la ligne correspondante
+            formula = f'''=IFERROR(
+IF(
+    AND(_Données!$C:$C<>"",_Données!$A:$A=$B$3,_Données!$B:$B="{date_str}"),
+    IF(
+        AND(INDEX(_Données!$C:$C,MATCH(1,(_Données!$A:$A=$B$3)*(_Données!$B:$B="{date_str}"),0))="JOUR_NON_OUVRE"),
+        "W",
+        IF(
+            AND(INDEX(_Données!$C:$C,MATCH(1,(_Données!$A:$A=$B$3)*(_Données!$B:$B="{date_str}"),0))="TELETRAVAIL",INDEX(_Données!$E:$E,MATCH(1,(_Données!$A:$A=$B$3)*(_Données!$B:$B="{date_str}"),0))="TELETRAVAIL"),
+            IF(OR(ISNUMBER(SEARCH("Validé",INDEX(_Données!$D:$D,MATCH(1,(_Données!$A:$A=$B$3)*(_Données!$B:$B="{date_str}"),0)))),ISNUMBER(SEARCH("validé",INDEX(_Données!$D:$D,MATCH(1,(_Données!$A:$A=$B$3)*(_Données!$B:$B="{date_str}"),0))))),"TV","TP"),
+            IF(
+                AND(INDEX(_Données!$C:$C,MATCH(1,(_Données!$A:$A=$B$3)*(_Données!$B:$B="{date_str}"),0))="CONGES",INDEX(_Données!$E:$E,MATCH(1,(_Données!$A:$A=$B$3)*(_Données!$B:$B="{date_str}"),0))="CONGES"),
+                IF(OR(ISNUMBER(SEARCH("RTT",INDEX(_Données!$D:$D,MATCH(1,(_Données!$A:$A=$B$3)*(_Données!$B:$B="{date_str}"),0)))),ISNUMBER(SEARCH("rtt",INDEX(_Données!$D:$D,MATCH(1,(_Données!$A:$A=$B$3)*(_Données!$B:$B="{date_str}"),0))))),
+                    IF(OR(ISNUMBER(SEARCH("Validé",INDEX(_Données!$D:$D,MATCH(1,(_Données!$A:$A=$B$3)*(_Données!$B:$B="{date_str}"),0)))),ISNUMBER(SEARCH("validé",INDEX(_Données!$D:$D,MATCH(1,(_Données!$A:$A=$B$3)*(_Données!$B:$B="{date_str}"),0))))),"RV","RP"),
+                    IF(OR(ISNUMBER(SEARCH("Validé",INDEX(_Données!$D:$D,MATCH(1,(_Données!$A:$A=$B$3)*(_Données!$B:$B="{date_str}"),0)))),ISNUMBER(SEARCH("validé",INDEX(_Données!$D:$D,MATCH(1,(_Données!$A:$A=$B$3)*(_Données!$B:$B="{date_str}"),0))))),"CV","CP")
+                ),
+                ""
+            )
+        )
+    ),
+    ""
+),"")'''
+
+            # Formule simplifiée avec codes
+            # TV = Télétravail Validé, TP = Télétravail Pending
+            # CV = Congés Validé, CP = Congés Pending
+            # RV = RTT Validé, RP = RTT Pending
+            # W = Weekend/Férié
+
+            # Version simplifiée de la formule (à cause de la complexité, on va utiliser une approche différente)
+            # On va mettre une formule qui retourne juste le type
+            cell.value = ''  # On va remplir avec du code Python
+
+    # Remplir avec Python au lieu de formules Excel trop complexes
+    print("  📝 Remplissage des données du calendrier...")
+    for month_num in range(1, 13):
+        row_num = 6 + month_num - 1
+        for day in range(1, 32):
+            col_num = day + 1
+            cell = ws.cell(row=row_num, column=col_num)
+
+            # Créer une formule qui retourne un code
+            date_str = f"2026/{month_num:02d}/{day:02d}"
+
+            # Formule pour récupérer le type_am et type_pm
+            # Si les deux sont identiques et valides, on affiche le code correspondant
+            formula = f'=IFERROR(IF(COUNTIFS(_Données!$A:$A,$B$3,_Données!$B:$B,"{date_str}")>0,' \
+                      f'IF(AND(INDEX(_Données!$C:$C,MATCH(1,(_Données!$A:$A=$B$3)*(_Données!$B:$B="{date_str}"),0))="JOUR_NON_OUVRE"),"W",' \
+                      f'IF(INDEX(_Données!$C:$C,MATCH(1,(_Données!$A:$A=$B$3)*(_Données!$B:$B="{date_str}"),0))="TELETRAVAIL",' \
+                      f'IF(ISNUMBER(SEARCH("Validé",INDEX(_Données!$D:$D,MATCH(1,(_Données!$A:$A=$B$3)*(_Données!$B:$B="{date_str}"),0)))),"TV","TP"),' \
+                      f'IF(INDEX(_Données!$C:$C,MATCH(1,(_Données!$A:$A=$B$3)*(_Données!$B:$B="{date_str}"),0))="CONGES",' \
+                      f'IF(ISNUMBER(SEARCH("RTT",INDEX(_Données!$D:$D,MATCH(1,(_Données!$A:$A=$B$3)*(_Données!$B:$B="{date_str}"),0)))),' \
+                      f'IF(ISNUMBER(SEARCH("Validé",INDEX(_Données!$D:$D,MATCH(1,(_Données!$A:$A=$B$3)*(_Données!$B:$B="{date_str}"),0)))),"RV","RP"),' \
+                      f'IF(ISNUMBER(SEARCH("Validé",INDEX(_Données!$D:$D,MATCH(1,(_Données!$A:$A=$B$3)*(_Données!$B:$B="{date_str}"),0)))),"CV","CP")),"")),"X"),"")'
+
+            cell.value = formula
+
+    # Ajouter le formatage conditionnel
+    print("  🎨 Application du formatage conditionnel...")
+
+    # Zone à formater : B6:AF17 (12 mois x 31 jours)
+    for month_num in range(1, 13):
+        row_num = 6 + month_num - 1
+        for day in range(1, 32):
+            col_letter = get_column_letter(day + 1)
+            cell_ref = f"{col_letter}{row_num}"
+
+            # Télétravail validé
+            ws.conditional_formatting.add(cell_ref,
+                                          FormulaRule(formula=[f'{cell_ref}="TV"'], fill=teletravail_fill))
+
+            # Télétravail à valider
+            ws.conditional_formatting.add(cell_ref,
+                                          FormulaRule(formula=[f'{cell_ref}="TP"'], fill=teletravail_pending_fill))
+
+            # Congés validés
+            ws.conditional_formatting.add(cell_ref,
+                                          FormulaRule(formula=[f'{cell_ref}="CV"'], fill=conges_fill))
+
+            # Congés à valider
+            ws.conditional_formatting.add(cell_ref,
+                                          FormulaRule(formula=[f'{cell_ref}="CP"'], fill=conges_pending_fill))
+
+            # RTT validés
+            ws.conditional_formatting.add(cell_ref,
+                                          FormulaRule(formula=[f'{cell_ref}="RV"'], fill=rtt_fill))
+
+            # RTT à valider
+            ws.conditional_formatting.add(cell_ref,
+                                          FormulaRule(formula=[f'{cell_ref}="RP"'], fill=rtt_pending_fill))
+
+            # Week-end/Férié
+            ws.conditional_formatting.add(cell_ref,
+                                          FormulaRule(formula=[f'{cell_ref}="W"'], fill=weekend_fill))
 
     ws.freeze_panes = 'B6'
 
-    print(f"  ✓ Feuille créée pour {collaborateur} ({collab_num}/{total_collabs})")
-
-
-def create_calendar_planning_sheets(wb, csv_file):
-    """Crée une feuille de planning pour chaque collaborateur"""
-
-    df = pd.read_csv(csv_file)
-    df['date_obj'] = pd.to_datetime(df['date'], format='%Y/%m/%d')
-
-    collaborateurs = sorted(df['collaborateur'].unique())
-    total = len(collaborateurs)
-
-    print(f"📅 Création de {total} feuilles de planning calendrier...")
-
-    for idx, collaborateur in enumerate(collaborateurs, 1):
-        create_calendar_planning_sheet_for_collaborator(wb, df, collaborateur, idx, total)
+    print("  ✓ Planning dynamique créé avec succès!")
 
 
 def create_excel_report(stats, csv_file, output_file):
@@ -440,8 +460,8 @@ def create_excel_report(stats, csv_file, output_file):
     print("📊 Création de la feuille Synthèse...")
     create_summary_sheet(wb, stats)
 
-    print("📅 Création des feuilles de planning calendrier...")
-    create_calendar_planning_sheets(wb, csv_file)
+    print("📅 Création de la feuille Planning Dynamique...")
+    create_dynamic_calendar_sheet(wb, csv_file)
 
     wb.save(output_file)
     print(f"✅ Fichier Excel créé : {output_file}")
@@ -451,7 +471,7 @@ def main():
     """Fonction principale"""
 
     input_file = "leave_planning_2026_complete.csv"
-    output_file = "compteurs_conges_2026_calendrier.xlsx"
+    output_file = "compteurs_conges_2026_dynamique.xlsx"
 
     print("🔍 Analyse du fichier CSV...")
     stats = analyze_leave_data(input_file)
@@ -464,7 +484,10 @@ def main():
     print("\n✨ Terminé !")
     print("\nContenu du fichier :")
     print("  - Feuille 'Synthèse' : compteurs par personne")
-    print("  - Feuilles individuelles : planning annuel calendrier pour chaque collaborateur")
+    print("  - Feuille 'Planning Calendrier' : vue dynamique avec liste déroulante")
+    print("\n💡 Utilisation :")
+    print("  Sélectionnez un collaborateur dans la liste déroulante (cellule B3)")
+    print("  Le calendrier se met automatiquement à jour avec les bonnes couleurs!")
 
 
 if __name__ == "__main__":
