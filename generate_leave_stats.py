@@ -656,8 +656,8 @@ def create_excel_report(stats, csv_file, output_file):
 def main():
     """Fonction principale"""
 
-    input_file = "leave_planning_2026_complete.csv"
-    output_file = "compteurs_conges_2026_dynamique_final.xlsx"
+    input_file = "/mnt/user-data/uploads/1770580647304_leave_planning_2026_complete.csv"
+    output_file = "/mnt/user-data/outputs/compteurs_conges_2026_dynamique_final.xlsx"
 
     print("🔍 Analyse du fichier CSV...")
     stats = analyze_leave_data(input_file)
