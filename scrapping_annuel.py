@@ -38,17 +38,24 @@ def determine_event_type_and_status(cls):
     return event_type, status
 
 
-def is_half_day(width_px):
+def is_half_day(width_px, col_width):
     """Détecte si c'est une demi-journée (width très petite)"""
-    return width_px <= 1
+    # ✅ CORRECTION : Seuil adaptatif basé sur col_width
+    # Une vraie demi-journée fait environ 1-2px
+    return width_px <= 2
 
 
 def pixels_to_days(left_px, width_px, col_width, nb_days, event_type=None):
     """Convertit position/largeur en pixels vers indices de jours"""
     center_px = left_px + width_px / 2
-    center_day = round(center_px / col_width)
+    # ✅ CORRECTION : Utiliser int() au lieu de round() pour éviter le décalage d'un jour
+    # round(26.65) = 27 mais on veut 26 (jour 27 en index 0-based)
+    center_day = int(center_px / col_width)
 
-    if width_px < col_width * 0.8 or event_type == "JOUR_NON_OUVRE":
+    # ✅ CORRECTION : Événements très courts (width < 30% d'un jour)
+    # sont traités comme un seul jour basé sur leur position centrale
+    # Cela gère les événements isolés avec width:4px ou width:6px généré par DailyRH
+    if width_px < col_width * 0.3 or event_type == "JOUR_NON_OUVRE":
         return max(0, min(nb_days - 1, center_day)), max(0, min(nb_days - 1, center_day))
 
     start_idx = max(0, int(math.floor(left_px / col_width)))
@@ -97,7 +104,12 @@ def scrape_month(page, year, month):
         name_cell = row.locator("td.dhx_matrix_scell").first
         name = name_cell.inner_text().strip() if name_cell.count() > 0 else "INCONNU"
 
-        if name == "Mes Collègues" or not name:
+        if (
+            name == "Mes Collègues"
+            or (isinstance(name,str) and name.startswith("Signataire"))
+            or (isinstance(name,str) and name.startswith("Total"))
+            or not name
+        ):
             continue
 
         planning = {}
@@ -143,7 +155,7 @@ def scrape_month(page, year, month):
             detail = build_detail(title, status)
 
             start_idx, end_idx = pixels_to_days(left_px, width_px, col_width, nb_days, event_type)
-            half_day = is_half_day(width_px)
+            half_day = is_half_day(width_px, col_width)
 
             all_events.append({
                 'type': event_type,
@@ -218,14 +230,18 @@ def scrape_month(page, year, month):
                     planning[day_idx]["detail_pm"] = detail
 
                 elif event_type == "CONGES":
-                    if current_am == "PRESENT":
+                    # ✅ CORRECTION CRITIQUE : Toujours appliquer CONGES sauf si JOUR_NON_OUVRE
+                    # Cela permet de gérer les saisies multiples (ex: RTT 27-29 puis RTT 30)
+                    # CONGES a priorité sur PRESENT ET TELETRAVAIL
+                    if current_am != "JOUR_NON_OUVRE":
                         planning[day_idx]["type_am"] = "CONGES"
                         planning[day_idx]["detail_am"] = detail
-                    if current_pm == "PRESENT":
+                    if current_pm != "JOUR_NON_OUVRE":
                         planning[day_idx]["type_pm"] = "CONGES"
                         planning[day_idx]["detail_pm"] = detail
 
                 elif event_type == "TELETRAVAIL":
+                    # Télétravail seulement si PRESENT (ne remplace pas CONGES)
                     if current_am == "PRESENT":
                         planning[day_idx]["type_am"] = "TELETRAVAIL"
                         planning[day_idx]["detail_am"] = detail
@@ -341,11 +357,11 @@ with sync_playwright() as p:
     context = browser.new_context(storage_state=SESSION_FILE)
     page = context.new_page()
 
-    page.goto("https://dailyrh.hr.bnpparibas/app/foryou/#/demarches/leaveplanning")
+    page.goto("https://dailyrh.hr.bnpparibas/app/foryou/#/demarches/teamplanning")
     page.wait_for_load_state("networkidle")
 
     print("✅ Page chargée, attente du chargement complet...")
-    time.sleep(6)
+    time.sleep(10)
 
     print("\n🔍 DEBUG : Test de détection du mois...")
     try:
