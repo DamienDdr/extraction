@@ -112,6 +112,21 @@ def scrape_month(page, year, month):
         ):
             continue
 
+        # ✅ NOUVEAU : Extraire l'UID depuis data-corp-id
+        uid = ""
+        try:
+            # Chercher l'élément avec data-corp-id dans la ligne
+            corp_id_elem = row.locator("[data-corp-id]").first
+            if corp_id_elem.count() > 0:
+                corp_id_full = corp_id_elem.get_attribute("data-corp-id") or ""
+                # Extraire la partie numérique (ex: "HRF354710" → "354710")
+                uid_match = re.search(r'(\d+)$', corp_id_full)
+                if uid_match:
+                    uid = uid_match.group(1)
+        except Exception as e:
+            print(f"   ⚠️  Impossible d'extraire l'UID pour {name}: {e}")
+            uid = ""
+
         planning = {}
         for i in range(nb_days):
             d = month_start + timedelta(days=i)
@@ -256,6 +271,7 @@ def scrape_month(page, year, month):
             info = planning[i]
             records.append({
                 "collaborateur": name,
+                "uid": uid,  # ✅ NOUVEAU : Ajout de l'UID
                 "date": info["date"],
                 "type_am": info["type_am"],
                 "detail_am": info["detail_am"],

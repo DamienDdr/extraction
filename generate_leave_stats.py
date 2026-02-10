@@ -85,6 +85,15 @@ def analyze_leave_data(csv_file):
     df = pd.read_csv(csv_file)
     df['date_obj'] = pd.to_datetime(df['date'], format='%Y/%m/%d')
 
+    # ✅ NOUVEAU : Créer un mapping collaborateur -> UID
+    collab_to_uid = {}
+    if 'uid' in df.columns:
+        for _, row in df.iterrows():
+            collab = row['collaborateur']
+            uid = row.get('uid', '')
+            if collab not in collab_to_uid and uid:
+                collab_to_uid[collab] = uid
+
     stats = defaultdict(lambda: {
         'teletravail_valide_am': 0,
         'teletravail_valide_pm': 0,
@@ -102,6 +111,7 @@ def analyze_leave_data(csv_file):
         'regle_20j_total': False,
         'jours_consecutifs_max': 0,
         'jours_total_periode': 0,
+        'uid': '',  # ✅ NOUVEAU : Stocker l'UID
     })
 
     # Période de référence : 15/05 au 15/10
@@ -110,6 +120,10 @@ def analyze_leave_data(csv_file):
 
     for _, row in df.iterrows():
         collaborateur = row['collaborateur']
+
+        # ✅ NOUVEAU : Stocker l'UID
+        if 'uid' in row and row['uid'] and not stats[collaborateur]['uid']:
+            stats[collaborateur]['uid'] = str(row['uid'])
 
         if row['type_am'] == 'TELETRAVAIL':
             validated = is_validated(row['detail_am'])
@@ -226,6 +240,7 @@ def create_summary_sheet(wb, stats):
 
     headers = [
         "Collaborateur",
+        "UID",  # ✅ NOUVEAU
         "Télétravail\nValidé (j)",
         "Télétravail\nÀ valider (j)",
         "Congés\nValidés (j)",
@@ -263,6 +278,7 @@ def create_summary_sheet(wb, stats):
 
         data = [
             collaborateur,
+            s['uid'],  # ✅ NOUVEAU : UID
             teletravail_valide,
             teletravail_a_valider,
             conges_valides,
@@ -277,11 +293,14 @@ def create_summary_sheet(wb, stats):
             cell = ws.cell(row=row, column=col, value=value)
             cell.border = border
 
-            if col > 1 and col <= 7:
+            if col == 2:
+                # Colonne UID - alignée à gauche
+                cell.alignment = Alignment(horizontal='left', vertical='center')
+            elif col > 2 and col <= 8:
                 cell.alignment = Alignment(horizontal='right', vertical='center')
                 if isinstance(value, (int, float)):
                     cell.number_format = '0.0'
-            elif col > 7:
+            elif col > 8:
                 cell.alignment = Alignment(horizontal='center', vertical='center')
                 cell.font = Font(bold=True, size=14)
                 if value == "✓":
@@ -298,7 +317,11 @@ def create_summary_sheet(wb, stats):
     ws.cell(row=row, column=1).fill = subheader_fill
     ws.cell(row=row, column=1).border = border
 
-    for col in range(2, 8):
+    # Colonne UID vide pour les totaux
+    ws.cell(row=row, column=2, value="").fill = subheader_fill
+    ws.cell(row=row, column=2).border = border
+
+    for col in range(3, 9):  # ✅ MODIFIÉ : commence à 3 au lieu de 2
         col_letter = get_column_letter(col)
         formula = f"=SUM({col_letter}2:{col_letter}{row - 1})"
         cell = ws.cell(row=row, column=col, value=formula)
@@ -308,7 +331,7 @@ def create_summary_sheet(wb, stats):
         cell.alignment = Alignment(horizontal='right', vertical='center')
         cell.number_format = '0.0'
 
-    cell = ws.cell(row=row, column=8)
+    cell = ws.cell(row=row, column=9)  # ✅ MODIFIÉ : colonne 9 au lieu de 8
     nb_ok_10j = sum(1 for s in stats.values() if s['regle_10j_consecutifs'])
     cell.value = f"{nb_ok_10j}/{len(stats)}"
     cell.font = Font(bold=True)
@@ -316,7 +339,7 @@ def create_summary_sheet(wb, stats):
     cell.border = border
     cell.alignment = Alignment(horizontal='center', vertical='center')
 
-    cell = ws.cell(row=row, column=9)
+    cell = ws.cell(row=row, column=10)  # ✅ MODIFIÉ : colonne 10 au lieu de 9
     nb_ok_20j = sum(1 for s in stats.values() if s['regle_20j_total'])
     cell.value = f"{nb_ok_20j}/{len(stats)}"
     cell.font = Font(bold=True)
@@ -325,12 +348,13 @@ def create_summary_sheet(wb, stats):
     cell.alignment = Alignment(horizontal='center', vertical='center')
 
     ws.column_dimensions['A'].width = 25
-    for col in range(2, 8):
+    ws.column_dimensions['B'].width = 10  # ✅ NOUVEAU : Largeur colonne UID
+    for col in range(3, 9):  # ✅ MODIFIÉ : commence à 3
         ws.column_dimensions[get_column_letter(col)].width = 14
-    ws.column_dimensions['H'].width = 12
-    ws.column_dimensions['I'].width = 12
+    ws.column_dimensions['I'].width = 12  # ✅ MODIFIÉ : I au lieu de H
+    ws.column_dimensions['J'].width = 12  # ✅ MODIFIÉ : J au lieu de I
 
-    ws.merge_cells(f'A{row + 2}:I{row + 2}')
+    ws.merge_cells(f'A{row + 2}:J{row + 2}')  # ✅ MODIFIÉ : J au lieu de I
     note_cell = ws[f'A{row + 2}']
     note_cell.value = "📋 Règles RH (période 15/05 - 15/10) : 10j consécutifs = au moins 10 jours d'affilée | 20j total = au moins 20 jours (consécutifs ou non)"
     note_cell.font = Font(size=9, italic=True)
