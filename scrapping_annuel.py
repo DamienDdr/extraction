@@ -49,7 +49,6 @@ def pixels_to_days(left_px, width_px, col_width, nb_days, event_type=None):
     """Convertit position/largeur en pixels vers indices de jours"""
     center_px = left_px + width_px / 2
     # ✅ CORRECTION : Utiliser int() au lieu de round() pour éviter le décalage d'un jour
-    # round(26.65) = 27 mais on veut 26 (jour 27 en index 0-based)
     center_day = int(center_px / col_width)
 
     # ✅ CORRECTION : Événements très courts (width < 30% d'un jour)
@@ -59,7 +58,13 @@ def pixels_to_days(left_px, width_px, col_width, nb_days, event_type=None):
         return max(0, min(nb_days - 1, center_day)), max(0, min(nb_days - 1, center_day))
 
     start_idx = max(0, int(math.floor(left_px / col_width)))
-    end_idx = min(nb_days - 1, int(math.ceil((left_px + width_px) / col_width)) - 1)
+    # ✅ CORRECTION FINALE : Pour trouver le dernier jour, on soustrait col_width/2
+    # car DailyRH laisse un gap/padding entre les événements consécutifs
+    # Exemple février : left=809, width=132, col_width=35.78
+    #   (809 + 132 - 17.89) / 35.78 = 25.79 → jour 26 ✓
+    # Exemple avril : left=891, width=88, col_width=33.33
+    #   (891 + 88 - 16.67) / 33.33 = 28.87 → jour 29 ✓
+    end_idx = min(nb_days - 1, int((left_px + width_px - col_width / 2) / col_width))
 
     return start_idx, end_idx
 
@@ -105,10 +110,10 @@ def scrape_month(page, year, month):
         name = name_cell.inner_text().strip() if name_cell.count() > 0 else "INCONNU"
 
         if (
-            name == "Mes Collègues"
-            or (isinstance(name,str) and name.startswith("Signataire"))
-            or (isinstance(name,str) and name.startswith("Total"))
-            or not name
+                name == "Mes Collègues"
+                or (isinstance(name, str) and name.startswith("Signataire"))
+                or (isinstance(name, str) and name.startswith("Total"))
+                or not name
         ):
             continue
 
@@ -119,8 +124,8 @@ def scrape_month(page, year, month):
             corp_id_elem = row.locator("[data-corp-id]").first
             if corp_id_elem.count() > 0:
                 corp_id_full = corp_id_elem.get_attribute("data-corp-id") or ""
-                # Extraire la partie numérique (ex: "HRF354710" → "354710")
-                uid_match = re.search(r'(\d+)$', corp_id_full)
+                # Extraire les 6 caractères après "HRF" (ex: "HRF354710" → "354710", "HRFA12345" → "A12345")
+                uid_match = re.search(r'HRF([A-Z0-9]{6})', corp_id_full)
                 if uid_match:
                     uid = uid_match.group(1)
         except Exception as e:
@@ -139,10 +144,34 @@ def scrape_month(page, year, month):
             }
 
         matrix_div = row.locator(".dhx_matrix_line").first
-        matrix_width = matrix_div.evaluate("el => el.offsetWidth")
+
+        # ✅ CORRECTION : Calculer matrix_width en sommant les largeurs des cellules réelles
+        # au lieu d'utiliser offsetWidth qui peut être transformé
+        # Trouver toutes les cellules td du mois
+        cells = row.locator("td.dhx_matrix_cell")
+        matrix_width = 0
+        for c in range(min(nb_days, cells.count())):
+            cell = cells.nth(c)
+            style = cell.get_attribute("style") or ""
+            width_match = re.search(r"width:\s*([\d.]+)px", style)
+            if width_match:
+                matrix_width += float(width_match.group(1))
+
+        # Si on n'a pas réussi à calculer, fallback sur offsetWidth
+        if matrix_width == 0:
+            matrix_width = matrix_div.evaluate("el => el.offsetWidth")
+
         col_width = matrix_width / nb_days
 
-        events = matrix_div.locator("div[class*='cell'], div[class*='event']")
+        # 🔍 DEBUG
+        name_upper = name.upper().replace(" ", "")
+        if "SASSINE" in name_upper or "SSS" in name_upper or "MOUSSA" in name_upper:
+            print(f"   🔍 DEBUG {name}:")
+            print(f"      matrix_width = {matrix_width}px")
+            print(f"      nb_days = {nb_days}")
+            print(f"      col_width = {col_width}px")
+
+        events = matrix_div.locator("div[class*='cell'], div[class*='event'], div[class*='timespan']")
 
         # Collecter tous les événements
         all_events = []
@@ -151,6 +180,9 @@ def scrape_month(page, year, month):
             ev = events.nth(e)
             cls = ev.get_attribute("class") or ""
             title = ev.get_attribute("title") or ""
+
+            # ✅ CORRECTION : Lire DIRECTEMENT l'attribut style (valeurs CSS brutes)
+            # et non pas les valeurs calculées qui peuvent être transformées
             style = ev.get_attribute("style") or ""
 
             left_match = re.search(r"left:\s*([\d.]+)px", style)
@@ -171,6 +203,15 @@ def scrape_month(page, year, month):
 
             start_idx, end_idx = pixels_to_days(left_px, width_px, col_width, nb_days, event_type)
             half_day = is_half_day(width_px, col_width)
+
+            # 🔍 DEBUG
+            name_upper = name.upper().replace(" ", "")
+            if ("SASSINE" in name_upper or "SSS" in name_upper or "MOUSSA" in name_upper) and (
+                    month == 2 or month == 4):
+                print(f"      Event: left={left_px}px, width={width_px}px, type={event_type}")
+                print(
+                    f"         → start_idx={start_idx} (jour {start_idx + 1}), end_idx={end_idx} (jour {end_idx + 1})")
+                print(f"         → half_day={half_day}, title='{title}'")
 
             all_events.append({
                 'type': event_type,
@@ -220,49 +261,68 @@ def scrape_month(page, year, month):
                         planning[day_idx]["detail_pm"] = detail
 
         # ÉTAPE 2 : Traiter les JOURNÉES ENTIÈRES
+        # ✅ ORDRE IMPORTANT : Traiter CONGES avant JOUR_NON_OUVRE
+        # pour que les congés posés sur jours fériés soient bien comptés
+
+        # D'abord les CONGES
         for evt in all_events:
+            if evt['half_day'] or evt['type'] != 'CONGES':
+                continue
+
             event_type = evt['type']
             detail = evt['detail']
 
-            if event_type == "JOUR_NON_OUVRE":
-                count_jno += 1
-            elif event_type == "TELETRAVAIL":
-                count_teletravail += 1
-            elif event_type == "CONGES":
-                count_conges += 1
+            for day_idx in range(evt['start_idx'], evt['end_idx'] + 1):
+                # CONGES écrase PRESENT et TELETRAVAIL, mais pas les demi-journées déjà posées
+                current_am = planning[day_idx]["type_am"]
+                current_pm = planning[day_idx]["type_pm"]
 
-            if evt['half_day']:
+                if current_am in ["PRESENT", "TELETRAVAIL", "JOUR_NON_OUVRE"]:
+                    planning[day_idx]["type_am"] = "CONGES"
+                    planning[day_idx]["detail_am"] = detail
+                if current_pm in ["PRESENT", "TELETRAVAIL", "JOUR_NON_OUVRE"]:
+                    planning[day_idx]["type_pm"] = "CONGES"
+                    planning[day_idx]["detail_pm"] = detail
+
+        # Ensuite TELETRAVAIL
+        for evt in all_events:
+            if evt['half_day'] or evt['type'] != 'TELETRAVAIL':
                 continue
+
+            event_type = evt['type']
+            detail = evt['detail']
 
             for day_idx in range(evt['start_idx'], evt['end_idx'] + 1):
                 current_am = planning[day_idx]["type_am"]
                 current_pm = planning[day_idx]["type_pm"]
 
-                if event_type == "JOUR_NON_OUVRE":
-                    planning[day_idx]["type_am"] = "JOUR_NON_OUVRE"
-                    planning[day_idx]["type_pm"] = "JOUR_NON_OUVRE"
+                # Télétravail seulement si PRESENT ou JOUR_NON_OUVRE (ne remplace pas CONGES)
+                if current_am in ["PRESENT", "JOUR_NON_OUVRE"]:
+                    planning[day_idx]["type_am"] = "TELETRAVAIL"
                     planning[day_idx]["detail_am"] = detail
+                if current_pm in ["PRESENT", "JOUR_NON_OUVRE"]:
+                    planning[day_idx]["type_pm"] = "TELETRAVAIL"
                     planning[day_idx]["detail_pm"] = detail
 
-                elif event_type == "CONGES":
-                    # ✅ CORRECTION CRITIQUE : Toujours appliquer CONGES sauf si JOUR_NON_OUVRE
-                    # Cela permet de gérer les saisies multiples (ex: RTT 27-29 puis RTT 30)
-                    # CONGES a priorité sur PRESENT ET TELETRAVAIL
-                    if current_am != "JOUR_NON_OUVRE":
-                        planning[day_idx]["type_am"] = "CONGES"
-                        planning[day_idx]["detail_am"] = detail
-                    if current_pm != "JOUR_NON_OUVRE":
-                        planning[day_idx]["type_pm"] = "CONGES"
-                        planning[day_idx]["detail_pm"] = detail
+        # Enfin JOUR_NON_OUVRE (uniquement si rien d'autre)
+        for evt in all_events:
+            if evt['half_day'] or evt['type'] != 'JOUR_NON_OUVRE':
+                continue
 
-                elif event_type == "TELETRAVAIL":
-                    # Télétravail seulement si PRESENT (ne remplace pas CONGES)
-                    if current_am == "PRESENT":
-                        planning[day_idx]["type_am"] = "TELETRAVAIL"
-                        planning[day_idx]["detail_am"] = detail
-                    if current_pm == "PRESENT":
-                        planning[day_idx]["type_pm"] = "TELETRAVAIL"
-                        planning[day_idx]["detail_pm"] = detail
+            event_type = evt['type']
+            detail = evt['detail']
+
+            for day_idx in range(evt['start_idx'], evt['end_idx'] + 1):
+                current_am = planning[day_idx]["type_am"]
+                current_pm = planning[day_idx]["type_pm"]
+
+                # JOUR_NON_OUVRE seulement si PRESENT (ne remplace ni CONGES ni TELETRAVAIL)
+                if current_am == "PRESENT":
+                    planning[day_idx]["type_am"] = "JOUR_NON_OUVRE"
+                    planning[day_idx]["detail_am"] = detail
+                if current_pm == "PRESENT":
+                    planning[day_idx]["type_pm"] = "JOUR_NON_OUVRE"
+                    planning[day_idx]["detail_pm"] = detail
 
         print(f"   ✅ JNO: {count_jno} | 🏠 TT: {count_teletravail} | 🏖️ CP: {count_conges} | ⏰ Demi: {count_demi}")
 
