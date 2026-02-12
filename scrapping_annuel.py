@@ -21,7 +21,7 @@ def determine_event_type_and_status(cls):
 
     if "grey_cell_weekend" in cls:
         event_type = "JOUR_NON_OUVRE"
-        status = None  # Pas de statut pour les jours non ouvrés
+        status = None
     elif "telework" in cls:
         event_type = "TELETRAVAIL"
         if "to_validate_vcell" in cls:
@@ -40,8 +40,6 @@ def determine_event_type_and_status(cls):
 
 def is_half_day(width_px, col_width):
     """Détecte si c'est une demi-journée (width très petite)"""
-    # Seuil adaptatif basé sur col_width
-    # Une vraie demi-journée fait environ 1-2px
     return width_px <= 2
 
 
@@ -51,8 +49,7 @@ def pixels_to_days(left_px, width_px, col_width, nb_days, event_type=None):
     center_day = int(center_px / col_width)
 
     # Événements très courts (width < 30% d'un jour)
-    # sont traités comme un seul jour basé sur leur position centrale
-    if width_px < col_width * 0.3 or event_type == "JOUR_NON_OUVRE":
+    if width_px < col_width * 0.3:
         return max(0, min(nb_days - 1, center_day)), max(0, min(nb_days - 1, center_day))
 
     start_idx = max(0, int(math.floor(left_px / col_width)))
@@ -71,6 +68,17 @@ def build_detail(title, status):
         return status
     else:
         return ""
+
+
+def extract_jno_dates_from_class(cls):
+    """Extrait la date depuis la classe CSS d'un dhx_marked_timespan.
+    Ex: 'dhx_marked_timespan grey_cell_weekend HRF344256-0_HRF460606 2026/04/06'
+    → retourne '2026/04/06' ou None
+    """
+    date_match = re.search(r'(\d{4}/\d{2}/\d{2})', cls)
+    if date_match:
+        return date_match.group(1)
+    return None
 
 
 def scrape_month(page, year, month):
@@ -92,6 +100,30 @@ def scrape_month(page, year, month):
         return []
 
     print(f"   👥 {row_count} collaborateurs")
+
+    # =====================================================================
+    # ✅ NOUVEAU : Extraire les JOUR_NON_OUVRE une seule fois pour tout le mois
+    # depuis les dhx_marked_timespan au niveau de la page (pas par collaborateur)
+    # La date est directement dans la classe CSS → pas de calcul pixel
+    # =====================================================================
+    jno_dates_set = set()
+    all_jno_timespans = page.locator("div.dhx_marked_timespan.grey_cell_weekend")
+    for i in range(all_jno_timespans.count()):
+        cls = all_jno_timespans.nth(i).get_attribute("class") or ""
+        jno_date = extract_jno_dates_from_class(cls)
+        if jno_date:
+            jno_dates_set.add(jno_date)
+
+    # Convertir en set d'indices (0-based) pour le mois
+    jno_day_indices = set()
+    for d_str in jno_dates_set:
+        parts = d_str.split("/")
+        if len(parts) == 3:
+            d_year, d_month, d_day = int(parts[0]), int(parts[1]), int(parts[2])
+            if d_year == year and d_month == month:
+                jno_day_indices.add(d_day - 1)  # 0-based index
+
+    print(f"   📅 Jours non ouvrés détectés : {sorted([idx + 1 for idx in jno_day_indices])} ({len(jno_day_indices)} jours)")
 
     records = []
 
@@ -145,7 +177,6 @@ def scrape_month(page, year, month):
             if width_match:
                 matrix_width += float(width_match.group(1))
 
-        # Si on n'a pas réussi à calculer, fallback sur offsetWidth
         if matrix_width == 0:
             matrix_width = matrix_div.evaluate("el => el.offsetWidth")
 
@@ -159,32 +190,26 @@ def scrape_month(page, year, month):
             print(f"      nb_days = {nb_days}")
             print(f"      col_width = {col_width}px")
 
-        # Chercher les événements normaux
-        events_normal = matrix_div.locator("div[class*='cell'], div[class*='event']")
+        # ✅ Chercher UNIQUEMENT les événements normaux (CONGES, TELETRAVAIL)
+        # On EXCLUT les grey_cell_weekend du locator pour éviter les doublons
+        events_normal = matrix_div.locator("div[class*='cell']:not(.dhx_marked_timespan), div[class*='event']:not(.dhx_marked_timespan)")
 
-        # Chercher AUSSI les week-ends (dhx_marked_timespan) avec un locator séparé
-        events_weekends = matrix_div.locator("div.dhx_marked_timespan")
-
-        # 🔍 DEBUG : Compter les événements
-        name_upper = name.upper().replace(" ", "")
+        # 🔍 DEBUG
         if ("SASSINE" in name_upper or "SSS" in name_upper or "MOUSSA" in name_upper) and month == 4:
-            print(f"      📊 Events normaux : {events_normal.count()}")
-            print(f"      📊 Events week-ends : {events_weekends.count()}")
-            print(f"      📊 TOTAL : {events_normal.count() + events_weekends.count()}")
+            print(f"      📊 Events normaux (sans JNO) : {events_normal.count()}")
+            print(f"      📊 JNO (extraits globalement) : {len(jno_day_indices)}")
 
-        # Traiter TOUS les événements (normaux + week-ends)
-        all_locators = []
-        for i in range(events_normal.count()):
-            all_locators.append(events_normal.nth(i))
-        for i in range(events_weekends.count()):
-            all_locators.append(events_weekends.nth(i))
-
-        # Collecter tous les événements
+        # Collecter les événements normaux (CONGES + TELETRAVAIL seulement)
         all_events = []
 
-        for ev in all_locators:
+        for i in range(events_normal.count()):
+            ev = events_normal.nth(i)
             cls = ev.get_attribute("class") or ""
             title = ev.get_attribute("title") or ""
+
+            # ✅ Ignorer si c'est un grey_cell_weekend qui aurait passé le filtre
+            if "grey_cell_weekend" in cls:
+                continue
 
             style = ev.get_attribute("style") or ""
 
@@ -197,16 +222,15 @@ def scrape_month(page, year, month):
             width_px = float(width_match.group(1))
 
             event_type, status = determine_event_type_and_status(cls)
-            if not event_type:
-                continue
+            if not event_type or event_type == "JOUR_NON_OUVRE":
+                continue  # ✅ On ne traite plus les JNO ici
 
             detail = build_detail(title, status)
 
-            start_idx, end_idx = pixels_to_days(left_px, width_px, col_width, nb_days, event_type)
+            start_idx, end_idx = pixels_to_days(left_px, width_px, col_width, nb_days)
             half_day = is_half_day(width_px, col_width)
 
             # 🔍 DEBUG
-            name_upper = name.upper().replace(" ", "")
             if ("SASSINE" in name_upper or "SSS" in name_upper or "MOUSSA" in name_upper) and (
                     month == 2 or month == 4):
                 print(f"      Event: left={left_px}px, width={width_px}px, type={event_type}")
@@ -240,13 +264,9 @@ def scrape_month(page, year, month):
         count_demi = 0
 
         for day_idx, day_events in half_days_by_day.items():
-            # ✅ Séparer les JNO des autres pour les traiter après
-            jno_events = [e for e in day_events if e['type'] == 'JOUR_NON_OUVRE']
-            other_events = [e for e in day_events if e['type'] != 'JOUR_NON_OUVRE']
-            other_events.sort(key=lambda x: x['order'])
+            day_events.sort(key=lambda x: x['order'])
 
-            # D'abord appliquer les non-JNO (CONGES, TELETRAVAIL)
-            for idx, evt in enumerate(other_events[:2]):
+            for idx, evt in enumerate(day_events[:2]):
                 period = "am" if idx == 0 else "pm"
                 event_type = evt['type']
                 detail = evt['detail']
@@ -265,15 +285,8 @@ def scrape_month(page, year, month):
                         planning[day_idx]["type_pm"] = event_type
                         planning[day_idx]["detail_pm"] = detail
 
-            # ✅ Ensuite JNO écrase tout (priorité absolue, même en demi-journée)
-            if jno_events:
-                planning[day_idx]["type_am"] = "JOUR_NON_OUVRE"
-                planning[day_idx]["detail_am"] = ""
-                planning[day_idx]["type_pm"] = "JOUR_NON_OUVRE"
-                planning[day_idx]["detail_pm"] = ""
-
         # ============================================================
-        # ÉTAPE 2 : Traiter les JOURNÉES ENTIÈRES
+        # ÉTAPE 2 : Traiter les JOURNÉES ENTIÈRES (CONGES puis TELETRAVAIL)
         # ============================================================
 
         # D'abord les CONGES
@@ -284,7 +297,6 @@ def scrape_month(page, year, month):
             for day_idx in range(evt['start_idx'], evt['end_idx'] + 1):
                 current_am = planning[day_idx]["type_am"]
                 current_pm = planning[day_idx]["type_pm"]
-                # ✅ CONGES ne remplace PAS JOUR_NON_OUVRE
                 if current_am in ["PRESENT", "TELETRAVAIL"]:
                     planning[day_idx]["type_am"] = "CONGES"
                     planning[day_idx]["detail_am"] = detail
@@ -301,7 +313,6 @@ def scrape_month(page, year, month):
             for day_idx in range(evt['start_idx'], evt['end_idx'] + 1):
                 current_am = planning[day_idx]["type_am"]
                 current_pm = planning[day_idx]["type_pm"]
-                # ✅ TELETRAVAIL ne remplace que PRESENT
                 if current_am == "PRESENT":
                     planning[day_idx]["type_am"] = "TELETRAVAIL"
                     planning[day_idx]["detail_am"] = detail
@@ -310,12 +321,13 @@ def scrape_month(page, year, month):
                     planning[day_idx]["type_pm"] = "TELETRAVAIL"
                     planning[day_idx]["detail_pm"] = detail
 
-        # ✅ ENFIN JOUR_NON_OUVRE — PRIORITÉ ABSOLUE (écrase TOUT)
-        # Un congé qui chevauche un week-end/férié ne doit PAS compter ces jours
-        for evt in all_events:
-            if evt['half_day'] or evt['type'] != 'JOUR_NON_OUVRE':
-                continue
-            for day_idx in range(evt['start_idx'], evt['end_idx'] + 1):
+        # ============================================================
+        # ✅ ÉTAPE 3 : JOUR_NON_OUVRE — PRIORITÉ ABSOLUE (écrase TOUT)
+        # Basé sur les dates CSS, pas sur les pixels
+        # Un congé qui chevauche un week-end/férié ne compte PAS ces jours
+        # ============================================================
+        for day_idx in jno_day_indices:
+            if day_idx in planning:
                 planning[day_idx]["type_am"] = "JOUR_NON_OUVRE"
                 planning[day_idx]["detail_am"] = ""
                 planning[day_idx]["type_pm"] = "JOUR_NON_OUVRE"
