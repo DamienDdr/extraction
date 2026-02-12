@@ -147,7 +147,7 @@ def scrape_month(page, year, month):
             corp_id_elem = row.locator("[data-corp-id]").first
             if corp_id_elem.count() > 0:
                 corp_id_full = corp_id_elem.get_attribute("data-corp-id") or ""
-                uid_match = re.search(r'HRF([A-Z0-9]{6})', corp_id_full)
+                uid_match = re.search(r'HRF([A-Za-z0-9]{6})', corp_id_full)
                 if uid_match:
                     uid = uid_match.group(1)
         except Exception as e:
