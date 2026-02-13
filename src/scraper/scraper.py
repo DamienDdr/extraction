@@ -176,22 +176,34 @@ def extract_collaborator_events(row, matrix_width: float, nb_days: int) -> List[
         start_idx, end_idx = pixels_to_days(left_px, width_px, col_width, nb_days)
         half_day = is_half_day(width_px, col_width)
         
+        # Déterminer si c'est AM ou PM pour les demi-journées
+        # en fonction de la position dans la journée
+        period = None
+        if half_day:
+            # Calculer le centre de l'événement
+            center_px = left_px + width_px / 2
+            # Position dans le jour (0-1)
+            day_position = (center_px % col_width) / col_width
+            # Si < 0.5 c'est le matin, sinon c'est l'après-midi
+            period = "am" if day_position < 0.5 else "pm"
+
         all_events.append({
             'type': event_type,
             'detail': detail,
             'start_idx': start_idx,
             'end_idx': end_idx,
             'half_day': half_day,
+            'period': period,
             'order': len(all_events)
         })
-    
+
     return all_events
 
 
 def apply_half_day_events(planning: Dict, events: List[Dict]):
     """
     Applique les événements de demi-journée au planning.
-    
+
     Args:
         planning: Dictionnaire de planning à modifier
         events: Liste d'événements
@@ -204,23 +216,21 @@ def apply_half_day_events(planning: Dict, events: List[Dict]):
                 if day_idx not in half_days_by_day:
                     half_days_by_day[day_idx] = []
                 half_days_by_day[day_idx].append(evt)
-    
+
     # Appliquer les demi-journées
     for day_idx, day_events in half_days_by_day.items():
-        day_events.sort(key=lambda x: x['order'])
-        
-        for idx, evt in enumerate(day_events[:2]):
-            period = "am" if idx == 0 else "pm"
+        for evt in day_events:
+            period = evt.get('period', 'am')  # Par défaut AM si pas détecté
             event_type = evt['type']
             detail = evt['detail']
-            
+
             if period == "am":
                 current = planning[day_idx]["type_am"]
                 if (event_type == "CONGES" and current in ["PRESENT", "TELETRAVAIL"]) or \
                    (event_type == "TELETRAVAIL" and current == "PRESENT"):
                     planning[day_idx]["type_am"] = event_type
                     planning[day_idx]["detail_am"] = detail
-            else:
+            else:  # period == "pm"
                 current = planning[day_idx]["type_pm"]
                 if (event_type == "CONGES" and current in ["PRESENT", "TELETRAVAIL"]) or \
                    (event_type == "TELETRAVAIL" and current == "PRESENT"):
