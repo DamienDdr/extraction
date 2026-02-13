@@ -183,10 +183,7 @@ def extract_collaborator_events(row, matrix_width: float, nb_days: int) -> List[
             # Calculer le centre de   l'événement
             day_position = (left_px % col_width) / col_width
             period = "am" if day_position < 0.5 else "pm"
-        # 🔍 DEBUG TEMPORAIRE
-        day_num = int(left_px / col_width) + 1  # Numéro du jour
-        logger.debug(f"HALF_DAY: jour {day_num}, left={left_px:.1f}px, col_width={col_width:.1f}px, "
-                     f"day_pos={day_position:.3f}, period={period}, type={event_type}")
+
         all_events.append({
             'type': event_type,
             'detail': detail,
