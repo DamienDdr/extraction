@@ -470,7 +470,7 @@ with sync_playwright() as p:
 
     all_records = []
 
-    for month in range(1, 5):
+    for month in range(1, 13):
         try:
             month_records = scrape_month(page, 2026, month)
             all_records.extend(month_records)
