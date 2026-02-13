@@ -1,0 +1,3 @@
+# Ce fichier permet à Git de suivre le dossier output/ même s'il est vide.
+# Les fichiers CSV et Excel générés par le scraper seront créés ici.
+# Ces fichiers sont automatiquement exclus par .gitignore pour des raisons de sécurité.

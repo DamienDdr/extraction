@@ -1,0 +1,10 @@
+# DailyRH Scraper - Dépendances Python
+
+# Automatisation du navigateur web
+playwright==1.40.0
+
+# Manipulation et analyse de données
+pandas==2.1.4
+
+# Génération de fichiers Excel
+openpyxl==3.1.2
