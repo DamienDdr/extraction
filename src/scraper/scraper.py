@@ -181,10 +181,7 @@ def extract_collaborator_events(row, matrix_width: float, nb_days: int) -> List[
         period = None
         if half_day:
             # Calculer le centre de l'événement
-            center_px = left_px + width_px / 2
-            # Position dans le jour (0-1)
-            day_position = (center_px % col_width) / col_width
-            # Si < 0.5 c'est le matin, sinon c'est l'après-midi
+            day_position = (left_px % col_width) / col_width
             period = "am" if day_position < 0.5 else "pm"
 
         all_events.append({
