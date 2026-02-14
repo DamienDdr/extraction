@@ -7,20 +7,27 @@ Modifier ce fichier permet d'adapter le comportement du scraper sans toucher au 
 
 from openpyxl.styles import Font, PatternFill, Border, Side
 from datetime import datetime
+from pathlib import Path
+from datetime import date
+# Racine du projet (un niveau au-dessus de /scripts)
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+
 
 # ============================================================
 # CONFIGURATION FICHIERS ET CHEMINS
 # ============================================================
 
 # Fichier de session SSO (contient les cookies d'authentification)
-SESSION_FILE = "bnpparibas_session.json"
+SESSION_FILE = BASE_DIR / "bnpparibas_session.json"
 
-# Répertoire de sortie pour tous les fichiers générés
-OUTPUT_DIR = "output"
+# Dossier output à la racine du projet
+OUTPUT_DIR = BASE_DIR / "output"
 
 # Noms des fichiers de sortie
-OUTPUT_CSV = "leave_planning_2026.csv"
-OUTPUT_EXCEL = "rapport_conges_2026.xlsx"
+OUTPUT_CSV = "extract_dailyRH.csv"
+OUTPUT_EXCEL = "rapport_dailyRH.xlsx"
 
 # ============================================================
 # CONFIGURATION SCRAPING
@@ -30,7 +37,7 @@ OUTPUT_EXCEL = "rapport_conges_2026.xlsx"
 DAILYRH_URL = "https://dailyrh.hr.bnpparibas/app/foryou/#/demarches/teamplanning"
 
 # Année à extraire
-TARGET_YEAR = 2026
+TARGET_YEAR = date.today().year
 
 # Mode headless (True = pas d'interface graphique, False = navigateur visible)
 HEADLESS_MODE = False
@@ -67,7 +74,7 @@ MOIS_NOMS = [
 ]
 
 # Nombre de jours par mois en 2026 (pas bissextile)
-JOURS_PAR_MOIS_2026 = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+#JOURS_PAR_MOIS_2026 = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 
 # Mapping des noms de mois français vers leur numéro
 FRENCH_MONTHS = {

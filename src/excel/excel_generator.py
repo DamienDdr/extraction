@@ -9,7 +9,7 @@ from openpyxl.utils import get_column_letter
 from typing import Dict
 
 from src.config import (
-    MOIS_NOMS, JOURS_SEMAINE, JOURS_PAR_MOIS_2026,
+    MOIS_NOMS, JOURS_SEMAINE,TARGET_YEAR,
     HEADER_FILL, HEADER_FONT, NAME_FILL, TOTAL_FILL, SUBHEADER_FILL,
     GREEN_FILL, RED_FILL, MONTH_FILL, TV_FILL, TP_FILL, CV_FILL, CP_FILL,
     RV_FILL, RP_FILL, WE_FILL, MIXED_FILL, INEX_FILL,
@@ -17,6 +17,7 @@ from src.config import (
     RULE_MIN_CONSECUTIVE_DAYS, RULE_MIN_TOTAL_DAYS, EXCEL_COLUMN_WIDTHS
 )
 from src.utils import is_validated, is_rtt, get_status_code, count_event_weight
+from src.utils.calendar_utils import get_days_per_month
 from src.logging import get_logger
 
 logger = get_logger()
@@ -412,7 +413,7 @@ def create_monthly_sheets(wb, csv_file: str):
 def create_calendar_sheets(wb, csv_file: str):
     """Crée les feuilles par collaborateur."""
     logger.info("Création des feuilles par collaborateur...")
-    
+    days_per_month = get_days_per_month(TARGET_YEAR)
     df = pd.read_csv(csv_file)
     df['date_obj'] = pd.to_datetime(df['date'], format='%Y/%m/%d')
     collaborateurs = sorted(df['collaborateur'].unique())
@@ -464,7 +465,7 @@ def create_calendar_sheets(wb, csv_file: str):
         
         for month_num, month_name in enumerate(MOIS_NOMS, 1):
             row_num = 7 + month_num - 1
-            max_days = JOURS_PAR_MOIS_2026[month_num - 1]
+            max_days = days_per_month[month_num - 1]
             
             cell = ws.cell(row=row_num, column=1, value=month_name)
             cell.fill = MONTH_FILL
