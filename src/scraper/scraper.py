@@ -126,72 +126,89 @@ def extract_non_working_days(page: Page, year: int, month: int) -> Set[int]:
     return jno_day_indices
 
 
-def extract_collaborator_events(row, matrix_width: float, nb_days: int) -> List[Dict]:
+def extract_collaborator_events(row, nb_days: int) -> List[Dict]:
     """
-    Extrait tous les événements (CONGES, TELETRAVAIL) d'un collaborateur.
-    
-    Args:
-        row: Élément de ligne Playwright
-        matrix_width: Largeur totale de la matrice
-        nb_days: Nombre de jours dans le mois
-        
-    Returns:
-        Liste d'événements
+    Version robuste basée sur bounding_box().
     """
-    col_width = matrix_width / nb_days
     matrix_div = row.locator(".dhx_matrix_line").first
-    
-    # Chercher uniquement les événements normaux (pas les jours non ouvrés)
+    cells = row.locator("td.dhx_matrix_cell")
+
+    # Pré-calcul des bounding boxes des cellules
+    day_boxes = []
+    for i in range(min(nb_days, cells.count())):
+        box = cells.nth(i).bounding_box()
+        if box:
+            day_boxes.append(box)
+        else:
+            day_boxes.append(None)
+
     events_normal = matrix_div.locator(
         "div[class*='cell']:not(.dhx_marked_timespan), "
         "div[class*='event']:not(.dhx_marked_timespan)"
     )
-    
+
     all_events = []
-    
+
     for i in range(events_normal.count()):
         ev = events_normal.nth(i)
         css_class = ev.get_attribute("class") or ""
         title = ev.get_attribute("title") or ""
-        
-        # Ignorer les jours non ouvrés qui auraient passé le filtre
+
         if "grey_cell_weekend" in css_class:
             continue
-        
-        style = ev.get_attribute("style") or ""
-        
-        left_match = re.search(r"left:\s*([\d.]+)px", style)
-        width_match = re.search(r"width:\s*([\d.]+)px", style)
-        if not left_match or not width_match:
+
+        event_box = ev.bounding_box()
+        if not event_box:
             continue
-        
-        left_px = float(left_match.group(1))
-        width_px = float(width_match.group(1))
-        
+
         event_type, status = determine_event_type_and_status(css_class)
         if not event_type or event_type == "JOUR_NON_OUVRE":
             continue
-        
+
         detail = build_detail(title, status)
-        start_idx, end_idx = pixels_to_days(left_px, width_px, col_width, nb_days)
-        half_day = is_half_day(width_px, col_width)
-        
-        # Déterminer si c'est AM ou PM pour les demi-journées
-        # en fonction de la position dans la journée
+
+        impacted_days = []
+
+        for day_idx, cell_box in enumerate(day_boxes):
+            if not cell_box:
+                continue
+
+            # Vérifier chevauchement horizontal
+            overlap = not (
+                event_box["x"] + event_box["width"] <= cell_box["x"]
+                or event_box["x"] >= cell_box["x"] + cell_box["width"]
+            )
+
+            if overlap:
+                impacted_days.append(day_idx)
+
+        if not impacted_days:
+            continue
+
+        start_idx = min(impacted_days)
+        end_idx = max(impacted_days)
+
+        # Détection demi-journée
+        first_cell_box = day_boxes[start_idx]
+        cell_width = first_cell_box["width"]
+        ratio = event_box["width"] / cell_width
+
+        half_day = ratio < 0.65
+
         period = None
         if half_day:
-            # Calculer le centre de   l'événement
-            day_position = (left_px % col_width) / col_width
-            period = "am" if day_position < 0.5 else "pm"
+            event_center = event_box["x"] + event_box["width"] / 2
+            cell_center = first_cell_box["x"] + cell_width / 2
+            period = "am" if event_center < cell_center else "pm"
 
         all_events.append({
-            'type': event_type,
-            'detail': detail,
-            'start_idx': start_idx,
-            'end_idx': end_idx,
-            'half_day': half_day,
-            'period': period,
-            'order': len(all_events)
+            "type": event_type,
+            "detail": detail,
+            "start_idx": start_idx,
+            "end_idx": end_idx,
+            "half_day": half_day,
+            "period": period,
+            "order": len(all_events),
         })
 
     return all_events
@@ -292,13 +309,13 @@ def apply_non_working_days(planning: Dict, jno_indices: Set[int]):
 
 def scrape_month(page: Page, year: int, month: int) -> List[Dict]:
     """
-    Scrape les données d'un mois donné.
-    
+    Scrape les données d'un mois donné (version robuste).
+
     Args:
         page: Page Playwright
         year: Année
         month: Mois (1-12)
-        
+
     Returns:
         Liste de records
     """
@@ -306,42 +323,43 @@ def scrape_month(page: Page, year: int, month: int) -> List[Dict]:
     _, last_day = calendar.monthrange(year, month)
     month_end = date(year, month, last_day)
     nb_days = (month_end - month_start).days + 1
-    
+
     logger.info(f"Traitement du mois : {month_start.strftime('%B %Y')}")
-    
-    time.sleep(2)
-    
+
+    # Attendre que les lignes soient présentes
+    page.wait_for_selector("tr.dhx_row_item", timeout=15000)
+
     rows = page.locator("tr.dhx_row_item")
     row_count = rows.count()
-    
+
     if row_count == 0:
         logger.warning(f"Aucune ligne détectée pour {month_start.strftime('%B %Y')}")
         return []
-    
+
     logger.info(f"Nombre de collaborateurs : {row_count}")
-    
+
     # Extraire les jours non ouvrés une seule fois pour tout le mois
     jno_day_indices = extract_non_working_days(page, year, month)
     logger.info(f"Jours non ouvrés : {len(jno_day_indices)} jours")
-    
+
     records = []
-    
+
     for r in range(row_count):
         row = rows.nth(r)
-        
+
         name_cell = row.locator("td.dhx_matrix_scell").first
         name = name_cell.inner_text().strip() if name_cell.count() > 0 else "INCONNU"
-        
-        # Ignorer les lignes spéciales
+
+        # Ignorer lignes techniques
         if (
-            name == "Mes Collègues"
-            or (isinstance(name, str) and name.startswith("Signataire"))
-            or (isinstance(name, str) and name.startswith("Total"))
-            or not name
+                name == "Mes Collègues"
+                or (isinstance(name, str) and name.startswith("Signataire"))
+                or (isinstance(name, str) and name.startswith("Total"))
+                or not name
         ):
             continue
-        
-        # Extraire l'UID
+
+        # Extraction UID
         uid = ""
         try:
             corp_id_elem = row.locator("[data-corp-id]").first
@@ -350,8 +368,8 @@ def scrape_month(page: Page, year: int, month: int) -> List[Dict]:
                 uid = extract_uid_from_corp_id(corp_id_full)
         except Exception as e:
             logger.warning(f"Impossible d'extraire l'UID pour {name}: {e}")
-        
-        # Initialiser le planning
+
+        # Initialisation planning
         planning = {}
         for i in range(nb_days):
             d = month_start + timedelta(days=i)
@@ -362,32 +380,30 @@ def scrape_month(page: Page, year: int, month: int) -> List[Dict]:
                 "detail_am": "",
                 "detail_pm": ""
             }
-        
-        # Calculer la largeur de la matrice
+
+        # Vérifier que la matrice est bien rendue
         matrix_div = row.locator(".dhx_matrix_line").first
-        cells = row.locator("td.dhx_matrix_cell")
-        matrix_width = 0
-        for c in range(min(nb_days, cells.count())):
-            cell = cells.nth(c)
-            style = cell.get_attribute("style") or ""
-            width_match = re.search(r"width:\s*([\d.]+)px", style)
-            if width_match:
-                matrix_width += float(width_match.group(1))
-        
-        if matrix_width == 0:
-            matrix_width = matrix_div.evaluate("el => el.offsetWidth")
-        
-        # Extraire et traiter les événements
-        events = extract_collaborator_events(row, matrix_width, nb_days)
-        
-        # Appliquer dans l'ordre : demi-journées → journées entières → jours non ouvrés
-        apply_half_day_events(planning, events)
-        apply_full_day_events(planning, events)
-        apply_non_working_days(planning, jno_day_indices)
-        
+        matrix_div.wait_for(state="attached", timeout=10000)
+
+        # Extraction événements via version bounding_box robuste
+        try:
+            events = extract_collaborator_events(row, nb_days)
+        except Exception as e:
+            logger.error(f"Erreur extraction événements pour {name}: {e}")
+            continue
+
+        # Application logique métier
+        try:
+            apply_half_day_events(planning, events)
+            apply_full_day_events(planning, events)
+            apply_non_working_days(planning, jno_day_indices)
+        except Exception as e:
+            logger.error(f"Erreur application planning pour {name}: {e}")
+            continue
+
         logger.debug(f"Traité : {name} ({uid})")
-        
-        # Générer les records
+
+        # Génération des records
         for i in range(nb_days):
             info = planning[i]
             records.append({
@@ -399,7 +415,7 @@ def scrape_month(page: Page, year: int, month: int) -> List[Dict]:
                 "type_pm": info["type_pm"],
                 "detail_pm": info["detail_pm"]
             })
-    
+
     logger.info(f"Lignes extraites : {len(records)}")
     return records
 
