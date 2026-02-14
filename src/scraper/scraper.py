@@ -310,14 +310,6 @@ def apply_non_working_days(planning: Dict, jno_indices: Set[int]):
 def scrape_month(page: Page, year: int, month: int) -> List[Dict]:
     """
     Scrape les données d'un mois donné (version robuste).
-
-    Args:
-        page: Page Playwright
-        year: Année
-        month: Mois (1-12)
-
-    Returns:
-        Liste de records
     """
     month_start = date(year, month, 1)
     _, last_day = calendar.monthrange(year, month)
@@ -338,12 +330,11 @@ def scrape_month(page: Page, year: int, month: int) -> List[Dict]:
 
     logger.info(f"Nombre de collaborateurs : {row_count}")
 
-    # Extraire les jours non ouvrés une seule fois pour tout le mois
+    # Extraire les jours non ouvrés
     jno_day_indices = extract_non_working_days(page, year, month)
     logger.info(f"Jours non ouvrés : {len(jno_day_indices)} jours")
 
     records = []
-    daily_rh_total = None  # ← AJOUT : Pour stocker la ligne Total
 
     for r in range(row_count):
         row = rows.nth(r)
@@ -351,23 +342,13 @@ def scrape_month(page: Page, year: int, month: int) -> List[Dict]:
         name_cell = row.locator("td.dhx_matrix_scell").first
         name = name_cell.inner_text().strip() if name_cell.count() > 0 else "INCONNU"
 
-        # Ignorer lignes techniques (SAUF Total)  ← MODIFIÉ
+
         if (
                 name == "Mes Collègues"
                 or (isinstance(name, str) and name.startswith("Signataire"))
+                or (isinstance(name, str) and name.startswith("Total"))
                 or not name
         ):
-            continue
-
-        # ← AJOUT : Traitement spécial pour Total
-        if isinstance(name, str) and name.startswith("Total"):
-            try:
-                matrix_div = row.locator(".dhx_matrix_line").first
-                matrix_div.wait_for(state="attached", timeout=10000)
-                daily_rh_total = extract_collaborator_events(row, nb_days)
-                logger.info(f"Ligne Total extraite : {len(daily_rh_total)} événements")
-            except Exception as e:
-                logger.warning(f"Impossible d'extraire la ligne Total : {e}")
             continue
 
         # Extraction UID
@@ -396,7 +377,7 @@ def scrape_month(page: Page, year: int, month: int) -> List[Dict]:
         matrix_div = row.locator(".dhx_matrix_line").first
         matrix_div.wait_for(state="attached", timeout=10000)
 
-        # Extraction événements via version bounding_box robuste
+        # Extraction événements
         try:
             events = extract_collaborator_events(row, nb_days)
         except Exception as e:
@@ -429,28 +410,27 @@ def scrape_month(page: Page, year: int, month: int) -> List[Dict]:
 
     logger.info(f"Lignes extraites : {len(records)}")
 
-    # ← AJOUT : Validation des totaux
-    if daily_rh_total:
-        try:
-            validation = validate_totals(daily_rh_total, records, year, month, nb_days, jno_day_indices)
+    # ← NOUVELLE APPROCHE : Extraction des totaux depuis les cellules
+    try:
+        dailyrh_totals = extract_dailyrh_totals(page, year, month, nb_days)
+        logger.info(f"Totaux DailyRH extraits : {len(dailyrh_totals)} jours")
 
-            if validation['errors_count'] == 0:
-                logger.info(f"✅ Validation OK : aucun écart sur {validation['total_days']} jours ouvrés")
-            else:
+        validation = validate_totals(dailyrh_totals, records, jno_day_indices, year, month)
+
+        if validation['errors_count'] == 0:
+            logger.info(f"✅ Validation OK : aucun écart détecté")
+        else:
+            logger.warning(f"⚠️ Validation : {validation['errors_count']} écarts détectés")
+            for error in validation['errors'][:10]:
                 logger.warning(
-                    f"⚠️ Validation : {validation['errors_count']} écarts sur {validation['total_days']} jours ouvrés")
-                for error in validation['errors'][:5]:  # Afficher les 5 premiers
-                    logger.warning(
-                        f"  Jour {error['day']} {error['period'].upper()} : "
-                        f"DailyRH={error['dailyrh_count']}, Scrapé={error['scraped_count']} "
-                        f"(écart: {error['difference']:+d})"
-                    )
-                if validation['errors_count'] > 5:
-                    logger.warning(f"  ... et {validation['errors_count'] - 5} autres écarts")
-        except Exception as e:
-            logger.error(f"Erreur lors de la validation des totaux : {e}")
-    else:
-        logger.warning("⚠️ Ligne Total non trouvée - validation ignorée")
+                    f"  Jour {error['day']} : "
+                    f"DailyRH={error['dailyrh_count']:.1f}, Scrapé={error['scraped_count']:.1f} "
+                    f"(écart: {error['difference']:+.1f})"
+                )
+            if validation['errors_count'] > 10:
+                logger.warning(f"  ... et {validation['errors_count'] - 10} autres écarts")
+    except Exception as e:
+        logger.error(f"Erreur lors de la validation des totaux : {e}")
 
     return records
 
@@ -589,97 +569,89 @@ def scrape_all_months(year: int) -> List[Dict]:
     return all_records
 
 
-def validate_totals(daily_rh_total: List[Dict], scraped_data: List[Dict], year: int, month: int, nb_days: int,
-                    jno_indices: Set[int]) -> Dict:
+def validate_totals(dailyrh_totals: Dict[str, float], scraped_data: List[Dict], jno_indices: Set[int], year: int,
+                       month: int) -> Dict:
     """
-    Compare les totaux DailyRH avec les données scrapées.
-    EXCLUT les jours non ouvrés du calcul.
-
-    Args:
-        daily_rh_total: Événements extraits de la ligne "Total" de DailyRH
-        scraped_data: Tous les records scrapés pour ce mois
-        year: Année
-        month: Mois
-        nb_days: Nombre de jours dans le mois
-        jno_indices: Set des indices de jours non ouvrés (0-based)
-
-    Returns:
-        Dictionnaire avec les statistiques de validation
+    Compare les totaux DailyRH (chiffres bruts) avec les données scrapées.
+    EXCLUT les jours non ouvrés.
     """
-    from datetime import date as dt
+    errors = []
 
-    # Construire le total DailyRH par jour (EXCLURE jours non ouvrés)
-    dailyrh_by_day = {}
-    for i in range(nb_days):
-        if i in jno_indices:  # ← AJOUT : ignorer jours non ouvrés
-            continue
-        d = dt(year, month, i + 1)
-        date_str = date_to_string(d)
-        dailyrh_by_day[date_str] = {"am": set(), "pm": set()}
-
-    for evt in daily_rh_total:
-        for day_idx in range(evt['start_idx'], evt['end_idx'] + 1):
-            if day_idx >= nb_days or day_idx in jno_indices:  # ← AJOUT : ignorer jours non ouvrés
-                continue
-            d = dt(year, month, day_idx + 1)
-            date_str = date_to_string(d)
-
-            if evt['half_day']:
-                period = evt.get('period', 'am')
-                dailyrh_by_day[date_str][period].add(evt['type'])
-            else:
-                dailyrh_by_day[date_str]['am'].add(evt['type'])
-                dailyrh_by_day[date_str]['pm'].add(evt['type'])
-
-    # Construire le total depuis les données scrapées (EXCLURE jours non ouvrés)
+    # Calculer les totaux scrapés par jour
     scraped_by_day = {}
-    for i in range(nb_days):
-        if i in jno_indices:  # ← AJOUT : ignorer jours non ouvrés
-            continue
-        d = dt(year, month, i + 1)
-        date_str = date_to_string(d)
-        scraped_by_day[date_str] = {"am": {}, "pm": {}}
-
     for record in scraped_data:
         date_str = record['date']
         if date_str not in scraped_by_day:
-            continue
+            scraped_by_day[date_str] = 0.0
 
         type_am = record['type_am']
         type_pm = record['type_pm']
 
-        # Ne compter que les événements (pas PRESENT ni JOUR_NON_OUVRE)
+        # Compter les événements (pas PRESENT ni JOUR_NON_OUVRE)
         if type_am not in ['PRESENT', 'JOUR_NON_OUVRE']:
-            scraped_by_day[date_str]['am'][type_am] = scraped_by_day[date_str]['am'].get(type_am, 0) + 1
+            scraped_by_day[date_str] += 0.5
         if type_pm not in ['PRESENT', 'JOUR_NON_OUVRE']:
-            scraped_by_day[date_str]['pm'][type_pm] = scraped_by_day[date_str]['pm'].get(type_pm, 0) + 1
+            scraped_by_day[date_str] += 0.5
 
-    # Comparer et détecter les écarts
-    errors = []
-    for date_str in dailyrh_by_day:
-        day_num = int(date_str.split('/')[2])
+    # Comparer jour par jour
+    for date_str, dr_count in dailyrh_totals.items():
+        # Ignorer les jours non ouvrés
+        day_idx = int(date_str.split('/')[2]) - 1  # 0-based
+        if day_idx in jno_indices:
+            continue
 
-        for period in ['am', 'pm']:
-            dr_events = dailyrh_by_day[date_str][period]
-            dr_count = len(dr_events)
+        sc_count = scraped_by_day.get(date_str, 0.0)
 
-            sc_events = scraped_by_day[date_str][period]
-            sc_count = sum(sc_events.values())
-
-            if dr_count != sc_count:
-                errors.append({
-                    'date': date_str,
-                    'day': day_num,
-                    'period': period,
-                    'dailyrh_count': dr_count,
-                    'scraped_count': sc_count,
-                    'difference': sc_count - dr_count,
-                    'dailyrh_types': list(dr_events),
-                    'scraped_types': sc_events
-                })
+        if abs(dr_count - sc_count) > 0.01:  # Tolérance pour les flottants
+            day_num = int(date_str.split('/')[2])
+            errors.append({
+                'date': date_str,
+                'day': day_num,
+                'dailyrh_count': dr_count,
+                'scraped_count': sc_count,
+                'difference': sc_count - dr_count
+            })
 
     return {
-        'total_days': nb_days - len(jno_indices),  # ← AJOUT : jours ouvrés uniquement
         'errors_count': len(errors),
-        'errors': errors
+        'errors': sorted(errors, key=lambda x: x['day'])
     }
+
+
+def extract_dailyrh_totals(page: Page, year: int, month: int, nb_days: int) -> Dict[str, float]:
+    """
+    Extrait les totaux DailyRH depuis les cellules teamTotal_cell.
+
+    Returns:
+        Dictionnaire {date_string: nombre_événements}
+    """
+    totals = {}
+
+    # Sélectionner toutes les cellules de total
+    total_cells = page.locator("td.teamTotal_cell")
+
+    for i in range(total_cells.count()):
+        cell = total_cells.nth(i)
+        css_class = cell.get_attribute("class") or ""
+
+        # Extraire la date depuis la classe (format : 2026-02-01)
+        date_match = re.search(r'(\d{4}-\d{2}-\d{2})', css_class)
+        if not date_match:
+            continue
+
+        date_str = date_match.group(1).replace('-', '/')  # 2026/02/01
+
+        # Vérifier que c'est bien le mois en cours
+        if not date_str.startswith(f"{year}/{month:02d}"):
+            continue
+
+        # Extraire le nombre depuis le <div> intérieur
+        try:
+            text = cell.inner_text().strip()
+            # Remplacer la virgule par un point pour les décimales
+            count = float(text.replace(',', '.')) if text else 0.0
+            totals[date_str] = count
+        except:
+            totals[date_str] = 0.0
+
+    return totals
