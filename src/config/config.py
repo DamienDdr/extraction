@@ -73,8 +73,7 @@ MOIS_NOMS = [
     "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"
 ]
 
-# Nombre de jours par mois en 2026 (pas bissextile)
-#JOURS_PAR_MOIS_2026 = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+
 
 # Mapping des noms de mois français vers leur numéro
 FRENCH_MONTHS = {

@@ -41,7 +41,7 @@ def main():
     logger = setup_logger(
         name="dailyrh_scraper",
         log_file="dailyrh_scraper.log",
-        level="DEBUG"  # Changer en "DEBUG" pour plus de détails
+        level="INFO"  # Changer en "DEBUG" pour plus de détails
     )
     
     try:
